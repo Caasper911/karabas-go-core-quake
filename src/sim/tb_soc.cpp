@@ -132,7 +132,8 @@ int main(int argc, char **argv) {
                 if (dp.reg >= 0) mem[dp.reg].owner = 0;
                 top->dBusWishbone_ACK = 1;
                 if (dio) {
-                    uint32_t o = daddr & 0xff, v = top->dBusWishbone_DAT_MOSI;
+                    // Quake Ф0: the full offset (the palette at 0x400.., the SFX ring at 0x2000.. aliased FRAME / EXIT)
+                    uint32_t o = daddr & 0x3fff, v = top->dBusWishbone_DAT_MOSI;
                     if (top->dBusWishbone_WE) {
                         if (o == 0x00) { char c = (char)(v & 0xff); if (c == '\n') { printf("%s\n", line.c_str()); line.clear(); } else line += c; }
                         else if (o == 0x04) { printf("F,%u,%llu\n", v, (unsigned long long)(cyc - last_frame)); fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true; }

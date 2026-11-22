@@ -1,13 +1,15 @@
 /*
  * kg_plat.c -- the rest of the PocketQuake platform for the karabas-go core (karabas: replaces
- * terminal.c, dataslot.c, main.c of PocketQuake): the text terminal goes to MMIO_UART, the data slots
- * do not exist (the pak is read by sys_kg.c; libc/file.c only uses them for saves, Ф2).
+ * terminal.c, dataslot.c, main.c of PocketQuake): the text terminal goes to MMIO_UART; data slot 1 is
+ * id1/pak0.pak (Ф0: in memory at WAD_BASE). The engine reads the pak both through Sys_File* (sys_kg.c)
+ * and through the stdio of their libc (COM_FOpenFile: fopen + fseek + fread -> dataslot_read), e.g. the
+ * demos. Other slots (mod paks, saves of libc/file.c: Ф2) do not exist.
  */
 
 #include <stdint.h>
 #include <stdarg.h>
 #include "libc/libc.h"
-#include "dataslot.h"
+#include "dataslot.h"   /* ours (quake/dataslot.h) */
 #undef SDRAM_BASE
 #include "mmio.h"   /* src/fw (-I) */
 
@@ -39,10 +41,17 @@ int dataslot_open_file(uint16_t slot_id, const char *filename, uint32_t flags, u
     (void)slot_id; (void)filename; (void)flags; (void)size;
     return -1;
 }
+unsigned char kg_dma_buffer[DMA_CHUNK_SIZE] __attribute__((aligned(32)));
+
+#define PAK0_SLOT_ID 1
+
 int dataslot_read(uint32_t slot_id, uint32_t offset, void *dest, uint32_t length)
 {
-    (void)slot_id; (void)offset; (void)dest; (void)length;
-    return -1;
+    uint32_t size = MMIO_WADSIZE;
+    if (slot_id != PAK0_SLOT_ID || size < 12 || offset > size || length > size - offset)
+        return -1;
+    memcpy(dest, (const void *)(WAD_BASE + offset), length);
+    return 0;
 }
 int dataslot_write(uint16_t slot_id, uint32_t offset, const void *src, uint32_t length)
 {
@@ -56,7 +65,6 @@ int32_t dataslot_load(uint16_t slot_id, void *dest, uint32_t max_length)
 }
 int dataslot_get_size(uint16_t slot_id, uint32_t *size_out)
 {
-    (void)slot_id;
-    *size_out = 0;
-    return -1;
+    *size_out = slot_id == PAK0_SLOT_ID ? MMIO_WADSIZE : 0;
+    return *size_out ? 0 : -1;
 }

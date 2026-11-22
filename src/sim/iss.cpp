@@ -117,6 +117,7 @@ static uint32_t fclass(float v) {
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, nullptr, _IOLBF, 1 << 16);   // Quake Ф0: progress visible in the log during long runs
     if (argc < 2) { fprintf(stderr, "usage: %s fw.bin --org A [--wad f] [--max Minstr] [--icache B] [--dcache B] [--prof f] [--prof-from F]\n", argv[0]); return 2; }
     uint64_t max_instr = 20000ull * 1000 * 1000;
     uint32_t icb = 32768, dcb = 32768, org = SDRAM_BASE;

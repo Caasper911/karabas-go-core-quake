@@ -98,6 +98,55 @@
 
 Итог Ф0: выбор А / Б / В вместе с пользователем.
 
+### Результаты Ф0 (2026-11-22, ветка `f0-iss`)
+
+**Стенд.** `make -C src/fw quake [FLOAT=soft|f] [QARGS=..]` → `build-quake-<FLOAT>/quake.bin` (soft 504 KB, f 449 KB).
+Дерево `upstream/pocketquake/src/firmware` копируется в `build-quake-*/src`, правки копии — в `src/fw/Makefile`
+(с пометкой `karabas:`), наши файлы кладутся поверх. Найденные зависимости движка PocketQuake от их железа,
+не закрытые флагами `HW_*` (на плате каждая повесила бы или сломала систему — исправлять и в Ф1):
+- `#define HW_SURFACE_ACCEL 1` прямо в `r_surf.c` (sed по `*.h` его не видел) — рендер поверхностей ждал их блок;
+- `d_polyse.c` читает colormap из их BRAM (`CMAP_BRAM_PTR` 0x54000000) при любом `HW_CMAP_BRAM` → `vid.colormap`;
+- stdio их libc (`COM_FOpenFile` → `fopen` / `fread` → `dataslot_read` через буфер 0x13F00000 и некэшируемый
+  псевдоним +0x40000000): демо читаются так, а не через `Sys_File*` → свой `dataslot.h` + `dataslot_read`
+  (слот 1 = pak0 в памяти; на плате — сюда чтение секторов);
+- `cl_parse.c`: пауза 500 мкс на каждое сообщение signon по счётчику 0x40000004 — убрана (у нас адрес
+  кэшируется, цикл не кончился бы);
+- отладочные записи в VRAM терминала 0x20000000 (`host.c`) и чтения sysreg 0x4xxxxxxx — в ISS / `tb_soc`
+  заглушка «pocket-io» (8170 за demo1); в Ф1 — убрать из копии или развести в `doom_soc`.
+
+**ISS.** RV32F (все команды, счёт по видам, строки `FF,` на кадр), регистры f и `fcsr` в дампе и заглушке
+возврата (блок +0x400, `mstatus.FS`). Проверка `src/sim/ftest/run.sh` (все виды команд F на 22 значениях, ISS
+против `VexRiscv_FPU` в Verilator, 6006 строк): совпадает всё, кроме `fmadd` / `fnmsub` (FpuPlugin не fused:
+34 строки, ±1 ulp) и `fsgnjx` с NaN (FpuPlugin выдаёт канонический NaN, 6 строк). Для одинаковых хэшей кадров
+ISS / RTL (Ф1) ISS должен повторять FpuPlugin.
+
+**`timedemo demo1`** (pak0 1.06, 969 кадров, E1M3 «the Necropolis», 320x200; кадры ISS верные: мир, освещение,
+модели, статус-бар):
+
+| вариант | инстр. / кадр | промахов / 1000 | такт / кадр | fps при 79.545 MHz (среднее / p95) |
+|---|---:|---:|---:|---:|
+| А. rv32im soft-float | 16.9 млн | 3.0 | 26.7 млн | **3.0** / 1.9 |
+| Б. rv32imf (FpuPlugin) | 2.32 млн | 10.0 | 5.01 млн | **15.9** / 10.2 |
+
+- Б, float-операций на кадр: fmadd 50k, fcvt 46k, fmul 33k, fadd 17k, fcmp 16k, fdiv 9.7k, fsqrt 0 (10.8 % инструкций).
+- Модель (`qmodel.py`: модель Doom 1.50·инстр + 28·промах + задержки FPU) сверена с Verilator (`tb_soc` с
+  `VexRiscv_FPU`, дамп кадра 300, 18 кадров 304..321, `qcal.py`): CPI 2.15, 4.01 млн тактов / кадр = 19.9 fps;
+  модель «pess» — 4.02 (отношение 0.997), «opt» занижает на 12 %. Берём «pess».
+- Профиль А: `__mulsf3` 41 %, `__addsf3` 19 %, `__subsf3` 5 %, `__divsf3` 5 % — ~80 % в soft-float.
+- Профиль Б: `D_DrawSpans8` 30 %, `D_DrawZSpans` 11 %, `R_DrawSurfaceBlock8_mip0` 7 %, `R_GenerateSpans_Array` 6 %,
+  `R_ScanEdges` 5 %, `R_ClipEdge` 5 %, `D_PolysetDraw` 4 %, `S_Update` 4 % — спаны и z-спаны 41 % (кандидаты на
+  RTL-помощника, как у PocketQuake).
+- Куча 7 MB (shareware хватило), невыровненных обращений 0.
+
+**Площадь (XST, процессор отдельно, `src/measure/xst_cpu.sh`):** rv32im 32K/32K 2235 LUT / 1385 FF / 34 RAMB16 +
+4 RAMB8 / 4 DSP / 106 MHz; + FpuPlugin 5141 / 3459 / 34 + 7 / 8 / 100.5 MHz (+2.9 тыс. LUT). После MAP Hexen
+процессор = 0.8 оценки XST → FPU ~2.3 тыс. LUT. Освобождается: OPL3 (`audio/fm`) 1208 LUT / 491 слайс, рисователь
+Doom (`drw`) 474 LUT / 201 слайс / 6 RAMB16. Ожидание Mini G: ~9.2 тыс. LUT (61 %), ~89 % слайсов — тесно, проверить
+сборкой. Частота: XST −5 % от FPU; Hexen держит 79.545 MHz с запасом 0.36 нс.
+
+**Вывод Ф0: GO с FPU (вариант Б).** ~16 fps в среднем (p95 ~10) при 79.5 MHz без помощников; А (3 fps) отпадает;
+В (fixed-point) не нужен. Решение — за пользователем.
+
 ### Ф1 — прошивка платы, первый запуск на Mini G
 
 `kg`-платформа Quake, ввод, `quake.kg`; OSD: FL «PAK» заменить двумя пунктами `F` (pak0, pak1; `.pak`, `/quake`),
@@ -117,9 +166,10 @@ LBA → `IMG RDATA`) с кэшем секторов в SDRAM (вопрос 2); �
   меняется в Ф1 (пока FL «PAK»).
 - [x] 2026-11-22: обзор портов; основа — `upstream/pocketquake` (thinkelastic/PocketQuake 5792fe2) вместо
   quakegeneric (решение пользователя).
-- [ ] Ф0.
-- `src/fw`, `src/rtl`, `src/sim` пока как у Hexen (цели `hexen`, `hexen-hw` работают); битстримы в git — Hexen
-  (Go / Mini 26112121, Mini G 26112120).
+- [x] 2026-11-22: Ф0 (ветка `f0-iss`): стенд PocketQuake soft / F, RV32F в ISS, `VexRiscv_FPU` + проверка,
+  замеры, площадь — GO с FPU (ждёт решения пользователя).
+- RTL пока как у Hexen; битстримы в git — Hexen (Go / Mini 26112121, Mini G 26112120). Большие файлы симуляции
+  (профили, дампы) — в `D:\.claude\karabas-go-core-quake\sim` (на C мало места).
 
 # История: Hexen (karabas-go-core-hexen)
 

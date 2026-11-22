@@ -322,7 +322,7 @@ $(XH)/hexen-hw.bin: $(XH)/hexen-hw.elf
 # Quake Ф0 bench (docs/PLAN.md): the engine of PocketQuake (upstream/pocketquake/src/firmware: quake/ +
 # its libc/) with its FPGA accelerators off and our platform (quake/: sys_kg, vid_kg, snd_kg, kg_plat,
 # sram_fill_accel.h, crt0_q.S, link_q.ld). The submodule stays untouched: the tree is copied to
-# $(QB)/src, every "#define HW_<name> 1" of its headers becomes 0 (the software paths), our files are
+# $(QB)/src, every "#define HW_<name> 1" of its headers and sources (r_surf.c has one) becomes 0 (the software paths), our files are
 # laid over it (setjmp.S: its fs0..fs11 save only with F). FLOAT=soft: rv32im + soft-float (the CPU of the core now); FLOAT=f: rv32imf (VexRiscv
 # FpuPlugin, variant Б). The pak: ../sim/iss --wad id1/pak0.pak (at 0x10c00000).
 #   make quake [FLOAT=soft|f] [QARGS="+timedemo demo1"]  -> build-quake-$(FLOAT)/quake.bin
@@ -354,16 +354,25 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_BENCH '-DARGS="$(QARGS)"' -I$(QT)/quake -I$(QT)/libc -I.
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
 QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/sram_fill_accel.h
+QOVERT  := quake/kg_plat.c quake/dataslot.h
 QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(QARGS)))
 
-$(QT)/.stamp: $(QOVER) quake/kg_plat.c $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.[chS] $(QSRC)/*.h)
+$(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.[chS] $(QSRC)/*.h)
 	rm -rf $(QT)
 	mkdir -p $(QT)
 	cp -r $(QSRC)/quake $(QSRC)/libc $(QSRC)/*.h $(QT)/
-	sed -i -E 's/^(#define[ \t]+HW_[A-Z0-9_]+)[ \t]+1\b/\1 0/' $(QT)/quake/*.h
+	sed -i -E 's/^(#define[ \t]+HW_[A-Z0-9_]+)[ \t]+1\b/\1 0/' $(QT)/quake/*.h $(QT)/quake/*.c
 	sed -i -e '/f[sl]w fs0,/i #ifdef __riscv_flen' -e '/f[sl]w fs11,/a #endif' $(QT)/libc/setjmp.S
+	# karabas: no 500 us busy wait per server message during the signon (their workaround, a read of the
+	# Pocket cycle counter 0x40000004: cached on our CPU, it would never end on the board)
+	sed -i 's|while (\*cyc - t < 50000) {}|(void)t; /* karabas: no signon delay */|' $(QT)/quake/cl_parse.c
+	grep -q 'karabas: no signon delay' $(QT)/quake/cl_parse.c
+	# karabas: the colormap copy in the Pocket BRAM (0x54000000) is used by d_polyse.c whatever HW_CMAP_BRAM
+	# says: point it at the colormap in memory
+	sed -i 's|^#define CMAP_BRAM_PTR .*|#define CMAP_BRAM_PTR ((const unsigned char *)vid.colormap) /* karabas */|' $(QT)/quake/surface_accel.h
+	grep -q 'vid.colormap) /\* karabas' $(QT)/quake/surface_accel.h
 	cp $(QOVER) $(QT)/quake/
-	cp quake/kg_plat.c $(QT)/
+	cp $(QOVERT) $(QT)/
 	touch $@
 $(QOPTS):
 	mkdir -p $(QB)
