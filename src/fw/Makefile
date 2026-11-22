@@ -420,7 +420,7 @@ $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
 quake-hw:
-	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM)
+	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM) QOPT=$(QOPT) HWPERSP=$(HWPERSP)
 
 clean:
 	rm -rf build-*

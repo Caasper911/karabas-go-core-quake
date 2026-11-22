@@ -206,7 +206,7 @@ wire [1:0] drw_sr_sel;
 wire [15:0] drw_sr_dat;
 wire drw_sr_we;                           // Quake Ф3: 0 = a read (quake_span texels)
 wire [15:0] drw_sr_rdat;
-wire qsp_busy, qsp_push_wait;
+wire qsp_busy;
 wire sd_ack;
 wire [31:0] sd_dat;
 reg sd_cyc, sd_we;
@@ -298,16 +298,18 @@ wire aud_sel = io_off14[13] || io_off14[13:11] == 3'b010 ||
 assign aud_we = d_req && d_io && !io_ack && !cpu_reset && d_we && aud_sel;
 // the drawer registers c0..dc; a queueing write (cc, d0) waits while its queue is full
 wire drw_sel_io = io_low && io_off[11:8] == 4'h0 && io_off[7:5] == 3'b110;
-// Quake Ф3: quake_span 0x100..0x13f; a SPAN / ZSPAN write waits while its queue is full
-wire qsp_sel_io = WITH_QSPAN && io_low && io_off[11:6] == 6'b000100;
-wire io_hold = (drw_sel_io && d_we && (io_off[7:0] == 8'hcc || io_off[7:0] == 8'hd0) && drw_push_wait) ||
-	(qsp_sel_io && d_we && (io_off[5:0] == 6'h20 || io_off[5:0] == 6'h24) && qsp_push_wait);
-wire qsp_we = d_req && d_io && !io_ack && !cpu_reset && d_we && qsp_sel_io && !io_hold;
+// Quake Ф3: quake_span 0x100..0x17f (Ф3е); it says which presented write must wait (qsp_io_hold: a full queue,
+// the surface registers while it is busy)
+wire qsp_sel_io = WITH_QSPAN && io_low && io_off[11:7] == 5'b00010;
+wire qsp_present = d_req && d_io && !io_ack && !cpu_reset && d_we && qsp_sel_io;
+wire qsp_io_hold;
+wire io_hold = (drw_sel_io && d_we && (io_off[7:0] == 8'hcc || io_off[7:0] == 8'hd0) && drw_push_wait) || qsp_io_hold;
+wire qsp_we = qsp_present && !io_hold;
 wire drw_we = d_req && d_io && !io_ack && !cpu_reset && d_we && drw_sel_io && !io_hold;
 generate if (WITH_QSPAN) begin : g_qsp
 quake_span qsp (
 	.clk(clk), .reset(cpu_reset),
-	.io_we(qsp_we), .io_off({ 2'b00, io_off[5:2] }), .io_wd(d_dat_o), .push_wait(qsp_push_wait), .busy(qsp_busy),
+	.io_sel(qsp_present), .io_off(io_off[6:2]), .io_wd(d_dat_o), .io_hold(qsp_io_hold), .io_we(qsp_we), .busy(qsp_busy),
 	.sr_req(drw_sr_req), .sr_we(drw_sr_we), .sr_adr(drw_sr_adr), .sr_sel(drw_sr_sel), .sr_dat(drw_sr_dat),
 	.sr_ack(drw_sr_ack), .sr_rdat(drw_sr_rdat)
 );
@@ -324,11 +326,11 @@ doom_draw drw (
 	.sr_req(drw_sr_req), .sr_adr(drw_sr_adr), .sr_sel(drw_sr_sel), .sr_dat(drw_sr_dat), .sr_ack(drw_sr_ack)
 );
 assign qsp_busy = 1'b0;
-assign qsp_push_wait = 1'b0;
+assign qsp_io_hold = 1'b0;
 assign drw_sr_we = 1'b1;
 end else begin : g_nodrw
 assign qsp_busy = 1'b0;
-assign qsp_push_wait = 1'b0;
+assign qsp_io_hold = 1'b0;
 assign drw_sr_we = 1'b1;
 assign drw_push_wait = 1'b0;
 assign drw_busy = 1'b0;
@@ -424,7 +426,7 @@ always @(posedge clk) begin
 			// the registers of the top (the sector buffer 0x1000.. too): not by the low byte below
 			io_dat <= aud_rd;
 		end else if (qsp_sel_io) begin
-			io_dat <= io_off[5:0] == 6'h3c ? { 8'h95, 23'd0, qsp_busy } : 32'd0;   // Quake Ф3: STAT
+			io_dat <= io_off[6:0] == 7'h3c ? { 8'h95, 23'd0, qsp_busy } : 32'd0;   // Quake Ф3: STAT
 		end else begin
 			case (io_off[7:0])
 				8'h0c: io_dat <= cycles;

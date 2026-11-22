@@ -56,6 +56,8 @@ int main(int argc, char **argv) {
     int stop_frames = -1, nframes = 0;
     uint64_t max_cycles = 2000ull * 1000 * 1000;
     double mhz = 79.545;          // Quake Ф0: the clock for US / SFX_POS
+    bool qsp_hold = false;        // Quake Ф3е-б: the surface registers wait for an idle drawer
+    int raw_at = -1; const char *raw_path = 0;   // --raw N file: the SRAM 0x3b0000..0x3fffff after the N-th frame write
     uint64_t n_pq = 0;            // Quake Ф0: accesses to the PocketQuake debug VRAM / sysreg
     uint32_t pal[256] = {0};      // Quake Ф1: the palette for the frame hash
     for (int i = 2; i < argc; i++) {
@@ -69,6 +71,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--frames")) stop_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max")) max_cycles = strtoull(argv[++i], 0, 10) * 1000000ull;
         else if (!strcmp(argv[i], "--mhz")) mhz = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--qsp-hold")) qsp_hold = true;
+        else if (!strcmp(argv[i], "--raw")) { raw_at = atoi(argv[++i]); raw_path = argv[++i]; }
     }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 2; }
@@ -185,6 +189,8 @@ int main(int argc, char **argv) {
             if (dp.active && dio && dp.left == 1 && top->dBusWishbone_WE) {
                 uint32_t o = daddr & 0x3fff;
                 if (((o == 0x120 || o == 0x124 || o == 0x178) && qq.size() >= QDEPTH) || (o == 0x04 && qbusy)) { dp.left = 2; q_full_cyc++; }
+                // Ф3е-б (--qsp-hold): the surface registers (TEX / TW, 0x140..0x174) wait while the drawer has work
+                else if (qsp_hold && qbusy && (o == 0x100 || o == 0x104 || (o >= 0x140 && o <= 0x174))) { dp.left = 2; q_full_cyc++; }
             }
             if (dp.active && --dp.left == 0) {
                 dp.active = false;
@@ -201,6 +207,7 @@ int main(int argc, char **argv) {
                             for (int i = 0; i < 64000; i++) h = (h ^ sram[0x3f0000 + i]) * 16777619u;
                             for (int i = 0; i < 256; i++) h = (h ^ pal[i]) * 16777619u;
                             printf("F,%u,%llu,%08x\n", v, (unsigned long long)(cyc - last_frame), h);
+                            if (raw_at >= 0 && nframes == raw_at) { FILE *rf = fopen(raw_path, "wb"); fwrite(&sram[0x3b0000], 1, 0x50000, rf); fclose(rf); }
                             fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true;
                         }
                         else if (o >= 0x400 && o < 0x800) pal[(o - 0x400) >> 2] = v;

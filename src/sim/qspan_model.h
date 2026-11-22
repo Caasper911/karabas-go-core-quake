@@ -123,13 +123,23 @@ struct QSpan {
         if (q < INT32_MIN) q = INT32_MIN;
         return q;
     }
-    static int32_t clampi(int64_t x, int32_t lo, int32_t hi) { return x < lo ? lo : x > hi ? hi : (int32_t)x; }
+    // as d_scan.c: the upper bound first (a tiny surface may have bbextents < lo)
+    static int32_t clampi(int64_t x, int32_t lo, int32_t hi) { return x > hi ? hi : x < lo ? lo : (int32_t)x; }
+    // the z halfword of a pixel: Zp >> sh (arithmetic; sh >= 32: the sign), sh < 0: Zp << -sh (-sh >= 32: 0)
+    static uint16_t zshift(int32_t Zp, int sh) {
+        if (sh >= 32) return Zp < 0 ? 0xffff : 0;
+        if (sh >= 0) return (uint16_t)(Zp >> sh);
+        if (sh <= -32) return 0;
+        return (uint16_t)((uint32_t)Zp << -sh);
+    }
 
     void persp(uint32_t v, uint8_t *sram) {
         static const int recip[16] = { 0, 65536, 32768, 21845, 16384, 13107, 10923, 9362,
                                        8192, 7282, 6554, 5958, 5461, 5041, 4681, 4369 };
         int u0 = v & 0x1ff, v0 = (v >> 9) & 0xff, count = ((v >> 17) & 0x1ff) + 1;
-        int32_t S = so + u0 * su + v0 * sv, T = to_ + u0 * tu + v0 * tv, Z = zo + u0 * zu + v0 * zv;
+        int32_t S = (int32_t)((uint32_t)so + (uint32_t)u0 * (uint32_t)su + (uint32_t)v0 * (uint32_t)sv);
+        int32_t T = (int32_t)((uint32_t)to_ + (uint32_t)u0 * (uint32_t)tu + (uint32_t)v0 * (uint32_t)tv);
+        int32_t Z = (int32_t)((uint32_t)zo + (uint32_t)u0 * (uint32_t)zu + (uint32_t)v0 * (uint32_t)zv);
         int32_t Zp = Z;                                      // the z of the pixels
         uint32_t last_ta = 0xffffffffu;
         int32_t s = clampi(persp_q(S, Z, ks, kz) + sadj, 0, bbs), t = clampi(persp_q(T, Z, kt, kz) + tadj, 0, bbt);
@@ -143,13 +153,16 @@ struct QSpan {
             count -= seg;
             int32_t snext, tnext;
             if (count) {
-                S += su * 16; T += tu * 16; Z += zu * 16;
+                S = (int32_t)((uint32_t)S + ((uint32_t)su << 4)); T = (int32_t)((uint32_t)T + ((uint32_t)tu << 4));
+                Z = (int32_t)((uint32_t)Z + ((uint32_t)zu << 4));
                 snext = clampi(persp_q(S, Z, ks, kz) + sadj, 16, bbs);
                 tnext = clampi(persp_q(T, Z, kt, kz) + tadj, 16, bbt);
                 sstep = (snext - s) >> 4;
                 tstep = (tnext - t) >> 4;
             } else {
-                S += su * (seg - 1); T += tu * (seg - 1); Z += zu * (seg - 1);
+                S = (int32_t)((uint32_t)S + (uint32_t)su * (uint32_t)(seg - 1));
+                T = (int32_t)((uint32_t)T + (uint32_t)tu * (uint32_t)(seg - 1));
+                Z = (int32_t)((uint32_t)Z + (uint32_t)zu * (uint32_t)(seg - 1));
                 snext = clampi(persp_q(S, Z, ks, kz) + sadj, 8, bbs);
                 tnext = clampi(persp_q(T, Z, kt, kz) + tadj, 8, bbt);
                 if (seg > 1) {
@@ -162,13 +175,14 @@ struct QSpan {
                 uint32_t a = tex + (uint32_t)(s >> 16) + (uint32_t)(t >> 16) * tw;
                 if ((a >> 1) != last_ta) { p_trd++; last_ta = a >> 1; }
                 if (!(off & 1) || i == 0) p_pwr++;   // a pair: the even pixel opens a halfword write, the odd one joins it
-                uint16_t zv16 = (uint16_t)(kz >= 15 ? (Zp >> (kz - 15)) : (Zp << (15 - kz)));
+                uint16_t zv16 = zshift(Zp, kz - 15);
                 if (off < 64000) {
                     sram[FB + off] = sram[a & 0x3fffff];
                     memcpy(&sram[ZB + 2 * off], &zv16, 2);
                 }
                 srd++; pix++; zpix++;
-                s += sstep; t += tstep; Zp += zu;
+                s = (int32_t)((uint32_t)s + (uint32_t)sstep); t = (int32_t)((uint32_t)t + (uint32_t)tstep);
+                Zp = (int32_t)((uint32_t)Zp + (uint32_t)zu);
             }
             s = snext; t = tnext;
         }

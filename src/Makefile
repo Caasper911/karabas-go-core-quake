@@ -60,8 +60,8 @@ all: $(BOARDS)
 prj_src = $(shell sed -n 's/^[a-z]* work "\(.*\)"/\1/p' $(1) 2>/dev/null)
 
 rom:
-	$(MAKE) -C fw quake-hw HWSPAN=1 SCSRAM=1
-	cp fw/build-quake-f-hw-span-scs/quake.bin roms/quake.bin
+	$(MAKE) -C fw quake-hw HWSPAN=1 SCSRAM=1 QOPT=1 HWPERSP=1
+	cp fw/build-quake-f-hw-span-scs-o-p/quake.bin roms/quake.bin
 
 kg: $(JSON) roms/quake.bin
 	$(PYTHON) tools/check_osd.py $(JSON)

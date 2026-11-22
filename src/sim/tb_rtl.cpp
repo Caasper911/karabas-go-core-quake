@@ -35,6 +35,7 @@ static std::vector<uint8_t> sram(SRAM_SIZE), sdram(SDRAM_SIZE);
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s dump.bin [--frames N] [--max Mcycles]\n", argv[0]); return 2; }
     int stop_frames = -1, trace = 0;
+    int raw_at = -1; const char *raw_path = 0;   // Quake Ф3е: --raw N file: the SRAM 0x3b0000..0x3fffff after the N-th frame write (from 0)
     FILE *prof = nullptr;                  // --prof file: the PC in execute and ra every 256 clocks (prof.py)
     uint32_t us0 = 0;                      // --us N: US / MS of the dump (iss prints it), held during the reset
                                            // (else the time of the resumed firmware jumps back)
@@ -45,6 +46,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace-sdram")) trace = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--prof")) prof = fopen(argv[++i], "w");
         else if (!strcmp(argv[i], "--us")) us0 = strtoul(argv[++i], 0, 10);
+        else if (!strcmp(argv[i], "--raw")) { raw_at = atoi(argv[++i]); raw_path = argv[++i]; }
     }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 2; }
@@ -183,6 +185,7 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 256; i++) h = (h ^ pal[i]) * 16777619u;
             memcpy(work_copy.data(), &sram[0x3f0000], 64000);
             printf("F,%d,%llu,%08x\n", nframes, (unsigned long long)(cyc - last_cyc), h);
+            if (raw_at >= 0 && nframes == raw_at) { FILE *rf = fopen(raw_path, "wb"); fwrite(&sram[0x3b0000], 1, 0x50000, rf); fclose(rf); }
             fflush(stdout);
             last_cyc = cyc;
             if (++nframes == stop_frames) done = true;
