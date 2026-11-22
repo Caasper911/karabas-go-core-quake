@@ -2,9 +2,9 @@
 
 [Русская версия](README.ru.md)
 
-**In development, nothing playable yet.** An attempt to run Quake on the Karabas Go board family (Xilinx Spartan-6 XC6SLX25): a VexRiscv RISC-V soft CPU running Quake (the GPL source release of id Software, as ported to a RISC-V soft CPU by [PocketQuake](https://github.com/thinkelastic/PocketQuake)), on the gateware of the Doom, Heretic and Hexen cores of the same family (SDRAM, frame buffer, palette, sound).
+Runs Quake on the Karabas Go board family (Xilinx Spartan-6 XC6SLX25): a VexRiscv RISC-V soft CPU running Quake (the GPL source release of id Software, as ported to a RISC-V soft CPU by [PocketQuake](https://github.com/thinkelastic/PocketQuake)), on the gateware of the Doom, Heretic and Hexen cores of the same family (SDRAM, frame buffer, palette, sound).
 
-Status: `src/quake.kg` for the Mini G (not yet tried on the board): the CPU got a hardware FPU (RV32F), which simulation says gives about 16 frames per second on average in the first demo (soft floating point gave 3). The game file `pak0.pak` is loaded whole into the SDRAM for now; no saves and a simple sound path yet; the Go and Mini come later. The plan and the measurements are in `docs/PLAN.md` (Russian).
+Status: `src/quake.kg` for the Go, Mini and Mini G. Playable on all three boards: a hardware FPU (RV32F) in the CPU and a perspective span drawer in the FPGA give about 12-28 frames per second depending on the scene; sound, keyboard, mouse and pads work, saves and the settings are kept on the SD card. The game file `pak0.pak` (your own copy, put it in `/quake` on the SD card) is loaded whole into the SDRAM at start (15-20 s). The plan and the measurements are in `docs/PLAN.md` (Russian).
 
 The core will contain no game data: the user puts an own `pak0.pak` (the shareware one or the full game) on the SD card.
 
