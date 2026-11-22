@@ -338,7 +338,10 @@ HW      ?=
 HWSPAN  ?=
 # Ф3а: SCSRAM=1 -> the surface cache in the SRAM 0x020000..0x1fffff (the drawer reads the texels there)
 SCSRAM  ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)
+# Ф3в: QX = extra compiler / LTO code generation flags (the -mtune / scheduling tries), QXN = its name (build dir)
+QX      ?=
+QXN     ?=
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QXN),-$(QXN))
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -361,7 +364,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
            -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types \
            -Wno-error=int-conversion -Wno-error=return-mismatch \
-           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I.
+           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
 QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/kg_hwspan.h
 QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/dataslot.h
@@ -406,7 +409,7 @@ $(QB)/crt0_q.o: quake/crt0_q.S
 	$(CROSS)gcc $(QMARCH) $(if $(HW),-DKG_HW) -c $< -o $@
 quake: $(QB)/quake.bin
 $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
-	$(CROSS)gcc $(QMARCH) -O3 -flto -nostdlib -nostartfiles -T quake/link_q.ld -Wl,--gc-sections \
+	$(CROSS)gcc $(QMARCH) -O3 -flto $(QX) -nostdlib -nostartfiles -T quake/link_q.ld -Wl,--gc-sections \
 	  -Wl,-Map,$(QB)/quake.map -o $@ $(QB)/crt0_q.o $(QOBJ) -lgcc
 	$(CROSS)size $@
 $(QB)/quake.bin: $(QB)/quake.elf
