@@ -4,7 +4,8 @@
 # and the script ends (a slow or hung run never holds the next board). A run is stopped when its log is silent
 # for SILENT seconds (a PAR hung in phase 4) or after LIMIT seconds. At most 2 runs at a time is the advice:
 # three MAPs at once crashed (segmentation fault) at 91 % slices.
-# usage: [BOARD=go|mini|minig] [LIMIT=2100] [SILENT=900] par_multi.sh 4 5 6    (default minig)
+# usage: [BOARD=go|mini|minig] [LIMIT=2100] [SILENT=900] [MAKEARGS=...] par_multi.sh 4 5 6    (default minig)
+# MAKEARGS: extra make arguments of each run (e.g. MAKEARGS="MAP_MT=off")
 # out: the winner's files are in /d/.claude/karabas-go-core-quake/par/<board>/t<N>/src; "WIN t<N>" is printed.
 R=/c/hobby/karabas-go-core-quake
 BD=${BOARD:-minig}
@@ -36,7 +37,7 @@ for t in "$@"; do
   cp -p Makefile karabas_$BD.prj karabas_$BD.xst karabas_$BD.ut karabas_$BD.ucf karabas_$BD.ngc core.json $d/src/
   cp -rp rtl $d/src/
   touch $d/src/karabas_$BD.ngc
-  ( cd $d/src && make $BD-impl MAP_T_$BD=$t > ../build.log 2>&1; echo "DONE $?" >> ../build.log ) &
+  ( cd $d/src && make $BD-impl MAP_T_$BD=$t $MAKEARGS > ../build.log 2>&1; echo "DONE $?" >> ../build.log ) &
   pid[$t]=$!
   start[$t]=$(date +%s)
 done
