@@ -1,6 +1,7 @@
 #!/bin/bash
 # Quake Ф0: XST area / speed estimate of a CPU core alone (xc6slx25-2-ftg256, options of the boards):
-#   xst_cpu.sh <verilog file> <name>   -> src/measure/<name>/ (xst.syr), prints the summary lines
+#   xst_cpu.sh <verilog file> <name> [top]   -> src/measure/<name>/ (xst.syr), prints the summary lines
+#   (top: VexRiscv by default; Quake Ф5: quake_span)
 set -e
 D=$(cd "$(dirname "$0")" && pwd)
 V=$(cygpath -m "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")")
@@ -16,7 +17,7 @@ run
 -ofn cpu
 -ofmt NGC
 -p xc6slx25-2-ftg256
--top VexRiscv
+-top ${3:-VexRiscv}
 -opt_mode Speed
 -opt_level 2
 -iobuf NO
