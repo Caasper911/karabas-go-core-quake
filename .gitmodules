@@ -7,3 +7,9 @@
 [submodule "upstream/chocolate-doom"]
 	path = upstream/chocolate-doom
 	url = https://github.com/chocolate-doom/chocolate-doom
+[submodule "upstream/quake"]
+	path = upstream/quake
+	url = https://github.com/id-Software/Quake
+[submodule "upstream/quakegeneric"]
+	path = upstream/quakegeneric
+	url = https://github.com/erysdren/quakegeneric

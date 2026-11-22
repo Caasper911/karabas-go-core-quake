@@ -1,13 +1,13 @@
-# Ядро Hexen для Karabas Go / Mini / Mini G
+# Ядро Quake для Karabas Go / Mini / Mini G
 
 [English version](README.md)
 
-**В разработке.** Hexen для плат семейства Karabas Go (Xilinx Spartan-6 XC6SLX25): софт-процессор VexRiscv (RISC-V) исполняет Hexen из [Chocolate Doom](https://github.com/chocolate-doom/chocolate-doom) 2.3.0 на прошивке ПЛИС ядер Doom и Heretic этого семейства (буфер кадра, палитра, микшер звука, OPL3 и MIDI-синтезатор платы — в ПЛИС).
+**В разработке, пока не играет.** Попытка запустить Quake на платах семейства Karabas Go (Xilinx Spartan-6 XC6SLX25): софт-процессор VexRiscv (RISC-V) исполняет WinQuake (открытые под GPL исходники id Software, через [quakegeneric](https://github.com/erysdren/quakegeneric)) на прошивке ПЛИС ядер Doom, Heretic и Hexen этого семейства (SDRAM, буфер кадра, палитра, звук).
 
-Состояние: `src/hexen.kg` играет в Hexen на Mini G (проверено на плате): кэши процессора по 32 КБ на 79,5 МГц и рисователь вида в ПЛИС дают около 35 кадров в секунду в обычных сценах и 23 в самых тяжёлых из виденных. Сохранения игры (сжатые) и настройки хранятся в файле сохранений на SD-карте. Битстримы Go и Mini собраны с тем же устройством (проверено на платах). План, замеры и история (Heretic, Doom) — в `docs/PLAN.md`.
+Состояние: структура проекта. Первая фаза — замер Quake на симуляторе системы команд процессора и выбор, как считать плавающую точку (FPU у процессора пока нет). План и замеры — в `docs/PLAN.md`.
 
-Данных игры в ядре не будет: пользователь кладёт на SD-карту свой `HEXEN.WAD` (или демо на 4 уровня).
+Данных игры в ядре не будет: пользователь кладёт на SD-карту свой `pak0.pak` (shareware или полной версии).
 
 ## Лицензия
 
-GPL-3.0 (`LICENSE`), как у других ядер karabas-go. Взятые части сохраняют свои лицензии: Chocolate Doom (и doomgeneric — образец порта Doom) — GPL-2.0-or-later, VexRiscv — MIT, opl3_fpga — LGPL-3.0.
+GPL-3.0 (`LICENSE`), как у других ядер karabas-go. Взятые части сохраняют свои лицензии: Quake и quakegeneric — GPL-2.0-or-later, Chocolate Doom (и doomgeneric) — GPL-2.0-or-later, VexRiscv — MIT, opl3_fpga — LGPL-3.0.

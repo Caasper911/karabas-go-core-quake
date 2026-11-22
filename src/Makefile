@@ -1,9 +1,9 @@
-# Hexen core (the Doom core RTL): the ISE 14.7 flow of the boards (as core-cpc) and the firmware ROM.
+# Quake core (the Doom / Hexen core RTL for now): the ISE 14.7 flow of the boards (as core-cpc) and the firmware ROM.
 #
 #   make minig           a board: <board>-xst (.ngc), <board>-impl (.bin), <board>-core (.kg)
 #   make minig-report    LUTs, slices, block RAMs and the timing result of the last build
-#   make rom             the program ROM of the .kg (roms/hexen.bin from src/fw hexen-hw, LAYOUT=sdram; Ф1)
-#   make kg              hexen.kg from the .bin files in git and roms/hexen.bin (no ISE: the RTL is Doom's)
+#   make rom             the program ROM of the .kg (roms/quake.bin from src/fw quake-hw, LAYOUT=sdram; Ф1)
+#   make kg              quake.kg from the .bin files in git and roms/quake.bin (no ISE: the RTL is Doom's)
 #   make clean           the intermediate files (not the .bin / .kg files)
 #
 # Inputs per board: karabas_<board>.prj (the shared modules as "../modules/rtl/...", rtl/), .xst, .ut, .ucf.
@@ -32,7 +32,7 @@ XIL = source $(ISE_SETTINGS) > /dev/null;
 XIL_BITGEN = $(XIL)
 endif
 
-KG = hexen.kg
+KG = quake.kg
 # make_core.py is a symlink to karabas-go-tools; without symlinks (git on Windows) a text file with its target
 MAKE_CORE := $(shell test -L make_core.py || ! head -c 2 make_core.py | grep -q '\.\.' && echo make_core.py || cat make_core.py)
 PYTHON ?= python3
@@ -60,10 +60,10 @@ all: $(BOARDS)
 prj_src = $(shell sed -n 's/^[a-z]* work "\(.*\)"/\1/p' $(1) 2>/dev/null)
 
 rom:
-	$(MAKE) -C fw hexen-hw
-	cp fw/build-hexen-hw-rv32imO2/hexen-hw.bin roms/hexen.bin
+	$(MAKE) -C fw quake-hw
+	cp fw/build-quake-hw/quake-hw.bin roms/quake.bin
 
-kg: $(JSON) roms/hexen.bin
+kg: $(JSON) roms/quake.bin
 	$(PYTHON) tools/check_osd.py $(JSON)
 	$(PYTHON) $(MAKE_CORE) $(JSON) $(KG)
 
@@ -81,7 +81,7 @@ karabas_$(1).bin: karabas_$(1).ngc karabas_$(1).ucf karabas_$(1).ut
 	$(XIL) trce -intstyle ise -v 3 -s 2 -n 3 -fastpaths -xml karabas_$(1).twx karabas_$(1).ncd -o karabas_$(1).twr karabas_$(1).pcf -ucf karabas_$(1).ucf
 	$(XIL_BITGEN) bitgen -intstyle ise -f karabas_$(1).ut karabas_$(1).ncd
 
-kg_$(1).stamp: karabas_$(1).bin $(JSON) roms/hexen.bin
+kg_$(1).stamp: karabas_$(1).bin $(JSON) roms/quake.bin
 	$(PYTHON) tools/check_osd.py $(JSON)
 	$(PYTHON) $(MAKE_CORE) $(JSON) $(KG) --boards $(1)
 	touch $$@

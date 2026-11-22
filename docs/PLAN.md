@@ -1,7 +1,81 @@
-# Hexen для Karabas Go / Mini / Mini G — план
+# Quake для Karabas Go / Mini / Mini G — план
 
-Репо создано 2026-11-21 клоном karabas-go-core-heretic (история с bd8f2f5 Doom, затем Heretic до 867063d).
-Ниже — план Hexen, под ним — история Heretic и Doom (их решения и замеры действуют и здесь).
+Репо создано 2026-11-22 клоном karabas-go-core-hexen (523ca1d; история Doom → Heretic → Hexen сохранена).
+Ниже — план Quake, под ним — история Hexen, Heretic и Doom (их решения и замеры SoC действуют и здесь).
+
+## Исходные данные (2026-11-22)
+
+- Плата: XC6SLX25 (15 032 LUT6, 3 758 слайсов, 52 RAMB16, 38 DSP48A1), SRAM 4 MB (асинхронная, 16 бит),
+  SDRAM 32 MB (16 бит), MCU RP2040 (OSD, HID, загрузка FL, файл сохранений).
+- SoC Hexen (стартовая точка): VexRiscv rv32im, I$ / D$ 32K, 79.545 MHz на всех трёх платах; кадр 320x200x8 в SRAM →
+  640x480@60 (x2, поля), палитра, DMA кадра; микшер SFX (DMX), OPL3, MIDI → SAM2695; рисователь колонок / спанов
+  Doom (`doom_draw.v`). Mini G: LUT 54 %, слайсов 81 %, RAMB16 46 / 52 — места мало.
+- Исходники (подмодули, только чтение; правки — копиями в `src/fw/quake/` с метками `karabas:`):
+  - `upstream/quake` — id-Software/Quake bf4ac42 (GPL-2, WinQuake + QuakeWorld): эталон;
+  - `upstream/quakegeneric` — erysdren/quakegeneric 1305210 (GPL-2): WinQuake с портовым слоем как у doomgeneric
+    (`QG_Init`, `QG_DrawFrame`, `QG_SetPalette`, `QG_GetKey`, `QG_GetMouseMove`, `QG_GetJoyAxes`, `QG_Tick`),
+    119 файлов, ~42 тыс. строк C, без x86-ассемблера, только 32 бита; куча 8 MB (`parms.memsize`), экран 320x240
+    (`QUAKEGENERIC_RES_*`) — у нас 320x200;
+  - `upstream/chocolate-doom`, `upstream/doomgeneric` остаются, пока платформа Hexen собирается из них.
+- Данные: shareware `id1/pak0.pak` (Quake 1.06, 18 689 235 байт; md5 проверить по файлу пользователя) — не в git
+  и не в .kg (`*.pak` в `.gitignore`), пользователь кладёт на SD в `/quake`. Полная версия: pak0 + pak1 (~53 MB
+  вместе) в SDRAM целиком не помещается.
+
+## Главные вопросы (отличия от ядер Doom / Heretic / Hexen)
+
+1. **Плавающая точка.** Quake считает в float почти везде: трансформации и отсечение (`r_bsp.c`, `r_edge.c`,
+   `r_draw.c`), перспектива спанов раз в 16 пикселей (`d_scan.c`), модели (`r_alias.c`, `d_polyse.c`), физика,
+   QuakeC (`pr_exec.c`: все числа float). У VexRiscv и у ISS (`src/sim/iss.cpp`) расширения F нет. Варианты:
+   - **А. soft-float** rv32im (libgcc `__addsf3`, `__mulsf3`, …): работает сразу, медленно — для замера Ф0;
+   - **Б. FPU VexRiscv** (`FpuPlugin`, RV32F; генератор SpinalHDL уже стоит с Hexen Ф0б): главный риск — площадь
+     (оценить XST), место освобождают OPL3, MIDI и `doom_draw` (Quake они не нужны);
+   - **В. fixed-point** в горячих местах (как делали порты на ARM без FPU): много ручной работы, QuakeC — всё
+     равно float.
+   Решение — по замеру Ф0: число float-операций на кадр, их доля во времени, оценка fps для А и Б.
+2. **Память.** Куча 8 MB (минимум `MINIMUM_MEMORY` 0x550000 = 5.3 MB), код ~0.5–0.7 MB, pak0 18.7 MB целиком в
+   SDRAM через FL (как WAD): раскладка Hexen (программа + куча до 12 MB, файл с 0x10c00000, до 20 MB) подходит.
+   Полная версия — чтение pak с SD по запросу через MCU — позже, отдельным решением.
+3. **Скорость.** Quake рассчитан на Pentium с FPU; у нас CPI ~2.4 и без FPU. Ещё z-буфер и surface cache —
+   много обращений к памяти помимо кадра. Порог для начала — 10 fps, цель 15+.
+4. **Звук.** Quake сам микширует каналы (`snd_dma.c`, `snd_mix.c`) в кольцо DMA 11025 Hz; нужен PCM-поток в
+   `doom_audio` (кольцо в SRAM / BRAM) или микшер в RTL. CD-музыки нет (`cd_null.c`), OPL3 / MIDI не нужны.
+5. **Ввод.** Клавиатура (коды `quakekeys.h`), мышь (обзор, `+mlook`), геймпад; консоль Quake (`~`).
+6. **Сохранения и конфиг.** `config.cfg`, `s<N>.sav` (текст, десятки–сотни KB): файловая система
+   `kg_save_fs.c` Hexen подходит.
+
+## Фазы
+
+### Ф0 — стенд ISS и замер (go / no-go), без платы, ветка `f0-iss`
+
+1. `make -C src/fw quake`: quakegeneric под rv32im (soft-float, -O2), платформа `src/fw/quake/` (QG_* поверх
+   `kg_main.c` / `syscalls.c`: кадр в SRAM 0x3f0000, палитра, таймер, pak в памяти как RAM-файл), 320x200.
+2. ISS: `timedemo demo1..3`, кадры (ppm → png), профиль (`prof.py`), инструкций на кадр, промахи 32K / 32K,
+   пик кучи и hunk.
+3. Float-операции по типам (профиль функций libgcc или счётчик в ISS) → оценка fps для А и Б; для Б — RV32F в ISS.
+4. Площадь FPU VexRiscv (XST отдельно) и что убрать из SoC (OPL3, MIDI, `doom_draw`).
+
+Итог Ф0: выбор А / Б / В вместе с пользователем.
+
+### Ф1 — прошивка платы, первый запуск на Mini G
+
+`kg`-платформа Quake, ввод, `quake.kg`; OSD: убрать Music (OPL3 / MIDI), оставить PAK, Controls, Mouse move, FPS, Reset.
+
+### Ф2 — звук (PCM-поток), сохранения, конфиг
+
+### Ф3 — скорость (FPU / RTL-помощники / кэши), Go и Mini, выпуск
+
+## Состояние
+
+- [x] 2026-11-22: клон core-hexen, подмодули `upstream/quake` и `upstream/quakegeneric`; `core.json`: id `quake`,
+  order 33, каталог `/quake`, FL «PAK» (.pak), ROM `roms/quake.bin` (появится в Ф1, до этого `make kg` не собирается);
+  `src/Makefile`: `quake.kg`, `make rom` ждёт цель `quake-hw` (Ф1).
+- [ ] Ф0.
+- `src/fw`, `src/rtl`, `src/sim` пока как у Hexen (цели `hexen`, `hexen-hw` работают); битстримы в git — Hexen
+  (Go / Mini 26112121, Mini G 26112120).
+
+# История: Hexen (karabas-go-core-hexen)
+
+Ядро Hexen (2026-11-21), из которого клонирован Quake: его решения и замеры SoC действуют и здесь.
 
 ## Обзор (2026-11-21)
 

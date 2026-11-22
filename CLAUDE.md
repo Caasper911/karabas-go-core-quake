@@ -4,20 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-A Hexen core for the Karabas Go, Mini and Mini G boards (Xilinx Spartan-6 XC6SLX25, ISE 14.7, XST), cloned on
-2026-11-21 from karabas-go-core-heretic (history kept: Doom, then Heretic; private repo Caasper911/karabas-go-core-hexen). The same SoC
-and bitstreams: a soft CPU (VexRiscv, MIT); video, the SFX mixer, OPL3 FM and the MIDI path to the SAM2695 are RTL.
-The game: `src/hexen` of Chocolate Doom 2.3.0 (`upstream/chocolate-doom`, GPL-2+) with its common `src/` files, on
-the platform of the Heretic port (`src/fw/htic/`, kept as the reference) plus `src/fw/hexen/`. Doom, Heretic and
-Hexen stay separate cores (user decision 2026-11-21). Docs, in Russian: `docs/PLAN.md` (Hexen on top with the survey
-data, the Heretic and Doom history below). Follow the phases; record a changed decision in PLAN.md.
+A Quake core for the Karabas Go, Mini and Mini G boards (Xilinx Spartan-6 XC6SLX25, ISE 14.7, XST), cloned on
+2026-11-22 from karabas-go-core-hexen (523ca1d, history kept: Doom, Heretic, Hexen). The starting point is the Hexen
+SoC and bitstreams: a soft CPU (VexRiscv rv32im, I$ / D$ 32K, 79.545 MHz), SDRAM 32 MB, SRAM 4 MB with the
+320x200x8 frame, palette, frame DMA, sound mixer, OPL3, MIDI, the Doom column / span drawer.
 
-No WAD files in git or in the .kg: the user loads an IWAD from SD1 (OSD file item). Test WADs stay local: the
-Hexen demo `~/Downloads/hexen-demo/HEXEN.WAD` (1.0, 4 maps, md5 876a5a44c7b68f04b3bb9bc7a5bd69d6); the Heretic
-shareware `~/Downloads/heretic-sw/HERETIC1.WAD` for the reference build.
+The game: WinQuake through `upstream/quakegeneric` (erysdren, GPL-2; port layer `QG_*` like doomgeneric), with
+`upstream/quake` (id-Software/Quake, GPL-2) as the reference. Submodules are read only; changed files are copied
+into `src/fw/quake/` and marked `karabas:`. Docs, in Russian: `docs/PLAN.md` (Quake on top, the Hexen / Heretic /
+Doom history below). Follow the phases; record a changed decision in PLAN.md.
 
-Speed (Mini G, board): I$ / D$ 32K, 79.545 MHz, the drawer of the view in the FPGA (Ф1в) and the renderer copies (Ф1г):
-~35 fps in common scenes, 23 at the worst grating. Saves (Ф2): packed files in the 1 MB save file (kg_save_fs.c).
+The main open question is floating point: Quake is float everywhere, the CPU and the ISS (`src/sim/iss.cpp`) are
+rv32im. Ф0 measures soft-float in the ISS and decides between soft-float, a VexRiscv FPU (RV32F) and fixed point.
+
+No game data in git or in the .kg: the user loads `pak0.pak` from SD (OSD file item "PAK", dir `/quake`). Until Ф1
+`src/fw`, `src/rtl`, `src/sim` are the Hexen ones (targets `hexen`, `hexen-hw` still build); `make kg` needs
+`roms/quake.bin` (Ф1).
 
 ## Rules of the core
 

@@ -1,15 +1,15 @@
 {
-    "id": "hexen",
-    "name": "Hexen",
-    "build": "26112121",
+    "id": "quake",
+    "name": "Quake",
+    "build": "26112201",
     "visible": true,
     "type": "osd",
-    "order": 32,
+    "order": 33,
     "eeprom_bank": 255,
     "rtc_mode": 0,
     "roms": [
         {
-            "filename": "roms/hexen.bin",
+            "filename": "roms/quake.bin",
             "address": 0
         }
     ],
@@ -33,10 +33,10 @@
     "osd": [
         {
             "type": "FL",
-            "name": "WAD",
+            "name": "PAK",
             "slot": 0,
-            "extensions": ".wad",
-            "dir": "/hexen",
+            "extensions": ".pak",
+            "dir": "/quake",
             "hotkey": "Menu+F1",
             "autoload": true
         },
