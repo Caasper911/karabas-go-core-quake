@@ -12,14 +12,35 @@
   Doom (`doom_draw.v`). Mini G: LUT 54 %, слайсов 81 %, RAMB16 46 / 52 — места мало.
 - Исходники (подмодули, только чтение; правки — копиями в `src/fw/quake/` с метками `karabas:`):
   - `upstream/quake` — id-Software/Quake bf4ac42 (GPL-2, WinQuake + QuakeWorld): эталон;
-  - `upstream/quakegeneric` — erysdren/quakegeneric 1305210 (GPL-2): WinQuake с портовым слоем как у doomgeneric
-    (`QG_Init`, `QG_DrawFrame`, `QG_SetPalette`, `QG_GetKey`, `QG_GetMouseMove`, `QG_GetJoyAxes`, `QG_Tick`),
-    119 файлов, ~42 тыс. строк C, без x86-ассемблера, только 32 бита; куча 8 MB (`parms.memsize`), экран 320x240
-    (`QUAKEGENERIC_RES_*`) — у нас 320x200;
+  - **`upstream/pocketquake` — thinkelastic/PocketQuake 5792fe2 (2026-03-17): основа порта** (решение
+    пользователя 2026-11-22, см. «Обзор портов»). Quake на VexiiRiscv rv32imafc 100 MHz в Cyclone V (Analogue
+    Pocket), без ОС; движок GPL-2 (`src/firmware/quake/`, 169 файлов), остальное — MIT (по README, файла лицензии
+    нет). Что берём:
+    - `sys_pocket.c`: pak читается с SD по запросу — `dataslot_read(slot, offset, dest, len)` в `Sys_FileRead`
+      (то же, что наш вопрос 2: заменить на запросы секторов MCU); куча = `_heap_start.._heap_end` линкера;
+    - `vid_pocket.c` (320x240x8, палитра, двойной буфер), `snd_pocket.c` (11025 Hz → FIFO), `in_pocket.c`, `cd_pocket.c`;
+    - ускорители в ПЛИС под флагами `HW_*` (`span_accel.h`, `dma_accel.h`, `alias_mac.h`): с 0 — программный путь;
+    - сборка: `-march=rv32imafc -mabi=ilp32f -O3 -flto -fsingle-precision-constant`, `-ffast-math` для рендера;
+    - `src/fpga/vexriscv/GenPocketQuake.scala`: **VexRiscv (не Vexii) с `FpuPlugin` (только single)** — образец
+      для варианта Б; там же замеры вариантов VexRiscv / VexiiRiscv по таймингу.
   - `upstream/chocolate-doom`, `upstream/doomgeneric` остаются, пока платформа Hexen собирается из них.
 - Данные: shareware `id1/pak0.pak` (Quake 1.06, 18 689 235 байт; md5 проверить по файлу пользователя) — не в git
   и не в .kg (`*.pak` в `.gitignore`), пользователь кладёт на SD в `/quake`. Полная версия: pak0 + pak1 (~53 MB
   вместе) в SDRAM целиком не помещается — поэтому pak читается с SD секторами (вопрос 2).
+
+## Обзор портов Quake для слабых машин (2026-11-22)
+
+Клоны для чтения: `C:/hobby/scratch-games/qsurvey` (вне репо).
+
+| Проект | Платформа | Для нас | Против |
+|---|---|---|---|
+| **thinkelastic/PocketQuake** (взят) | VexiiRiscv rv32imafc 100 MHz, Cyclone V; SDRAM 64 MB, PSRAM 16 MB (код), SRAM 256 KB (z-буфер) | Та же схема (RISC-V в ПЛИС, без ОС), pak с SD по запросу, ускорители под `HW_*` с программным путём, генератор VexRiscv + FPU. v2.0: полная версия, сохранения, «30+ fps» (по новости, точного замера в репо нет) | Его ПЛИС больше: ~16 тыс. ALM (86 %), 301 / 308 M10K, D$ 128 KB, I$ 16 KB — RTL целиком не влезет; без FPU не рассчитан |
+| openfpgaOS/Quake (ba2db8b, v1.0.8, 2026-11-18) | Продолжение PocketQuake на openfpgaOS (ОС с POSIX, musl, SDL2, Apache-2.0 SDK) | Новее: BSP2, дополнения (Hipnotic, Rogue, X-Men, DOPA), оптимизации движка — источник исправлений позже | Завязан на API ОС (`of_emit_*` GPU, `of_mixer_*`, ~30 файлов) |
+| next-hack/MG24Quake (GPL-3), zenodante/RP2350-Quake | Cortex-M33 с FPU 78 MHz, 276 KB RAM, pak во флеше | Оптимизированный рендер (в RP2350 — путь на C), QuakeC переведён в C, ~29 fps demo3 | pak только после конвертера на ПК; приёмы ради малого ОЗУ |
+| mbitsnbites/mc1-quake (gitlab, GPL) | MRISC32 с FPU в ПЛИС, 320x180 | Исправления 1.09 для не-x86; автор: без FPU скорости не будет | Другая ISA |
+| PocketQuake Dan East (2001) | ARM без FPU | Fixed-point рендер — исходник для варианта В | Старый, код только на форуме VOGONS |
+
+Вывод: все быстрые порты — с FPU (довод за вариант Б).
 
 ## Главные вопросы (отличия от ядер Doom / Heretic / Hexen)
 
@@ -42,7 +63,7 @@
      uzebox / msx / uknc / quadspeccy (`karabas-go-firmware` origin/master, `docs/link_v2.md`). В SoC тот же
      путь у `doom_sd.v` (файл сохранений).
    - Раскладка: pak0 и pak1 — два пункта `F` (слоты 1 и 2) вместо FL «PAK»; `Sys_File*` переводят смещение в
-     сектор и читают через MCU; свободная SDRAM (~15–20 MB после кода и кучи) — кэш секторов (повторный вход
+     сектор и читают через MCU (у PocketQuake это одна функция — `dataslot_read` в `sys_pocket.c`); свободная SDRAM (~15–20 MB после кода и кучи) — кэш секторов (повторный вход
      на уровень, `gfx.wad`, звуки). Один путь для shareware (только pak0), полной версии и модов; загрузка
      FL целиком для Quake не нужна.
    - Цена: загрузка уровня (~2–6 MB чтения) — несколько секунд; скорость SD → MCU → FPGA не замерена (ожидание
@@ -51,9 +72,11 @@
      (неудобно, ломает моды).
    - В Ф0 (ISS) pak остаётся в памяти как RAM-файл — на замер это не влияет.
 3. **Скорость.** Quake рассчитан на Pentium с FPU; у нас CPI ~2.4 и без FPU. Ещё z-буфер и surface cache —
-   много обращений к памяти помимо кадра. Порог для начала — 10 fps, цель 15+.
+   много обращений к памяти помимо кадра. Порог для начала — 10 fps, цель 15+. PocketQuake: 100 MHz, D$ 128 KB,
+   ускорители спанов / z / моделей — «30+ fps»; у нас 79.5 MHz, D$ 32 KB.
 4. **Звук.** Quake сам микширует каналы (`snd_dma.c`, `snd_mix.c`) в кольцо DMA 11025 Hz; нужен PCM-поток в
-   `doom_audio` (кольцо в SRAM / BRAM) или микшер в RTL. CD-музыки нет (`cd_null.c`), OPL3 / MIDI не нужны.
+   `doom_audio` (кольцо в SRAM / BRAM) или микшер в RTL (PocketQuake: `snd_pocket.c` → FIFO 2048, 48 kHz).
+   CD-музыка — позже (у PocketQuake `cd_pocket.c`: дорожки .bin с SD), OPL3 / MIDI не нужны.
 5. **Ввод.** Клавиатура (коды `quakekeys.h`), мышь (обзор, `+mlook`), геймпад; консоль Quake (`~`).
 6. **Сохранения и конфиг.** `config.cfg`, `s<N>.sav` (текст, десятки–сотни KB): файловая система
    `kg_save_fs.c` Hexen подходит.
@@ -62,12 +85,16 @@
 
 ### Ф0 — стенд ISS и замер (go / no-go), без платы, ветка `f0-iss`
 
-1. `make -C src/fw quake`: quakegeneric под rv32im (soft-float, -O2), платформа `src/fw/quake/` (QG_* поверх
-   `kg_main.c` / `syscalls.c`: кадр в SRAM 0x3f0000, палитра, таймер, pak в памяти как RAM-файл), 320x200.
+1. `make -C src/fw quake [FLOAT=soft|f]`: движок `upstream/pocketquake/src/firmware/quake` с `HW_*` = 0, свои
+   `sys_kg.c` / `vid_kg.c` / `snd_kg.c` / `in_kg.c` в `src/fw/quake/` вместо `*_pocket.c` (кадр в SRAM 0x3f0000,
+   палитра, таймер, `dataslot_read` → pak в памяти ISS), 320x200; newlib платформы Hexen вместо их libc.
+   Сборки: rv32im soft-float (А) и rv32imf (Б).
 2. ISS: `timedemo demo1..3`, кадры (ppm → png), профиль (`prof.py`), инструкций на кадр, промахи 32K / 32K,
    пик кучи и hunk.
-3. Float-операции по типам (профиль функций libgcc или счётчик в ISS) → оценка fps для А и Б; для Б — RV32F в ISS.
-4. Площадь FPU VexRiscv (XST отдельно) и что убрать из SoC (OPL3, MIDI, `doom_draw`).
+3. RV32F в ISS (декодер, счёт операций по типам, задержки FPU VexRiscv в модели); профиль soft-float → оценка
+   fps для А и Б.
+4. Площадь VexRiscv + `FpuPlugin` (по `GenPocketQuake.scala`, наши кэши 32K) в XST отдельно и что убрать из SoC
+   (OPL3, MIDI, `doom_draw`).
 
 Итог Ф0: выбор А / Б / В вместе с пользователем.
 
@@ -83,11 +110,13 @@ LBA → `IMG RDATA`) с кэшем секторов в SDRAM (вопрос 2); �
 
 ## Состояние
 
-- [x] 2026-11-22: клон core-hexen, подмодули `upstream/quake` и `upstream/quakegeneric`; `core.json`: id `quake`,
+- [x] 2026-11-22: клон core-hexen, подмодули `upstream/quake` и `upstream/quakegeneric` (заменён, см. ниже); `core.json`: id `quake`,
   order 33, каталог `/quake`, FL «PAK» (.pak), ROM `roms/quake.bin` (появится в Ф1, до этого `make kg` не собирается);
   `src/Makefile`: `quake.kg`, `make rom` ждёт цель `quake-hw` (Ф1).
 - [x] 2026-11-22: решение по pak — чтение с SD секторами через пункты `F` и кэш в SDRAM (вопрос 2); `core.json`
   меняется в Ф1 (пока FL «PAK»).
+- [x] 2026-11-22: обзор портов; основа — `upstream/pocketquake` (thinkelastic/PocketQuake 5792fe2) вместо
+  quakegeneric (решение пользователя).
 - [ ] Ф0.
 - `src/fw`, `src/rtl`, `src/sim` пока как у Hexen (цели `hexen`, `hexen-hw` работают); битстримы в git — Hexen
   (Go / Mini 26112121, Mini G 26112120).

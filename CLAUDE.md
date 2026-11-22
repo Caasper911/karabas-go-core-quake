@@ -9,9 +9,12 @@ A Quake core for the Karabas Go, Mini and Mini G boards (Xilinx Spartan-6 XC6SLX
 SoC and bitstreams: a soft CPU (VexRiscv rv32im, I$ / D$ 32K, 79.545 MHz), SDRAM 32 MB, SRAM 4 MB with the
 320x200x8 frame, palette, frame DMA, sound mixer, OPL3, MIDI, the Doom column / span drawer.
 
-The game: WinQuake through `upstream/quakegeneric` (erysdren, GPL-2; port layer `QG_*` like doomgeneric), with
-`upstream/quake` (id-Software/Quake, GPL-2) as the reference. Submodules are read only; changed files are copied
-into `src/fw/quake/` and marked `karabas:`. Docs, in Russian: `docs/PLAN.md` (Quake on top, the Hexen / Heretic /
+The game: the Quake engine of `upstream/pocketquake` (thinkelastic/PocketQuake, `src/firmware/quake/`, GPL-2;
+bare-metal Quake on VexiiRiscv rv32imafc in the Analogue Pocket FPGA), with its FPGA accelerators off (`HW_*` = 0)
+and own platform files in `src/fw/quake/` instead of its `*_pocket.c`; `upstream/quake` (id-Software/Quake, GPL-2)
+is the reference. PocketQuake already reads the pak on demand (`dataslot_read` in `sys_pocket.c`): it maps to
+sector reads of an `F` image through the MCU. Submodules are read only; changed files are copied into
+`src/fw/quake/` and marked `karabas:`. Docs, in Russian: `docs/PLAN.md` (Quake on top, the Hexen / Heretic /
 Doom history below). Follow the phases; record a changed decision in PLAN.md.
 
 The main open question is floating point: Quake is float everywhere, the CPU and the ISS (`src/sim/iss.cpp`) are

@@ -10,6 +10,6 @@
 [submodule "upstream/quake"]
 	path = upstream/quake
 	url = https://github.com/id-Software/Quake
-[submodule "upstream/quakegeneric"]
-	path = upstream/quakegeneric
-	url = https://github.com/erysdren/quakegeneric
+[submodule "upstream/pocketquake"]
+	path = upstream/pocketquake
+	url = https://github.com/thinkelastic/PocketQuake
