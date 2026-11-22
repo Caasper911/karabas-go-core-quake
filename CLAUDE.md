@@ -23,8 +23,8 @@ rv32im. Ф0 measures soft-float in the ISS and decides between soft-float, a Vex
 No game data in git or in the .kg: the user loads `pak0.pak` from SD (OSD file item "PAK", dir `/quake`; test copy
 `~/Downloads/quake-sw/game/ID1/PAK0.PAK`, shareware 1.06).
 
-State (Ф4, branch `f4-boards`; Ф0..Ф3 done, Mini G ok on the board): all boards = `VexRiscv_FPU` (32K / 32K + FpuPlugin), `doom_soc` WITH_DRAW 0,
-`doom_audio` WITH_OPL 0; `quake.kg` for Go / Mini / Mini G (Ф4: Go / Mini 26112205 not yet run on the boards). Firmware: `make -C
+State (Ф4, branch `f4-boards`; Ф0..Ф4 done, all boards ok): all boards = `VexRiscv_FPU` (32K / 32K + FpuPlugin), `doom_soc` WITH_DRAW 0,
+`doom_audio` WITH_OPL 0; `quake.kg` for Go / Mini / Mini G (Ф4: Go / Mini 26112205 ok on the boards). Firmware: `make -C
 src/fw quake [FLOAT=soft|f]` (ISS bench, timedemo), `quake-hw` (board; `make -C src rom kg`). The engine tree is
 copied to the build dir and patched there (src/fw/Makefile, `karabas:`). Checks: `src/sim/ftest/run.sh` (RV32F ISS
 vs FpuPlugin), `obj_rtl_q/tb_rtl` vs `obj_VexRiscv_FPU/tb_soc` frame hashes (not vs the ISS: FpuPlugin fmadd
