@@ -70,3 +70,24 @@
 #define MMIO_QSP_STAT    MMIO_REG(0x13c)
 #define QSP_ID           0x95u
 #define QSP_ZB           0x3b0000u   /* the z-buffer in the SRAM: 320 x 200 x 16 bit (to 0x3cf3ff) */
+
+/* Quake Ф3е: perspective in the drawer. Per surface (fixed point with a scale per quantity: S = sdivz * 2^ks,
+   T = tdivz * 2^kt, Z = zi * 2^kz, each origin + u * grad_u + v * grad_v at screen pixel u, v): SO..ZV, K =
+   { kz (23..16), kt (15..8), ks (7..0) } signed bytes, SADJ / TADJ (sadjust / tadjust), BBS / BBT (bbextents /
+   bbextentt). PSPAN = { count - 1 (25..17), v (16..9), u (8..0) } queues a span: texels and z (the z-buffer
+   QSP_ZB) as D_DrawSpans8 + D_DrawZSpans. Model: src/sim/qspan_model.h persp(). */
+#define MMIO_QSP_SO      MMIO_REG(0x140)
+#define MMIO_QSP_SU      MMIO_REG(0x144)
+#define MMIO_QSP_SV      MMIO_REG(0x148)
+#define MMIO_QSP_TO      MMIO_REG(0x14c)
+#define MMIO_QSP_TU      MMIO_REG(0x150)
+#define MMIO_QSP_TV      MMIO_REG(0x154)
+#define MMIO_QSP_ZO      MMIO_REG(0x158)
+#define MMIO_QSP_ZU      MMIO_REG(0x15c)
+#define MMIO_QSP_ZV      MMIO_REG(0x160)
+#define MMIO_QSP_K       MMIO_REG(0x164)
+#define MMIO_QSP_SADJ    MMIO_REG(0x168)
+#define MMIO_QSP_TADJ    MMIO_REG(0x16c)
+#define MMIO_QSP_BBS     MMIO_REG(0x170)
+#define MMIO_QSP_BBT     MMIO_REG(0x174)
+#define MMIO_QSP_PSPAN   MMIO_REG(0x178)

@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
             case 0xd8: drw.cm_adr = v; return;
             case 0xdc: return;                            // the flat cache: forget it
             }
-            if (o >= 0x100 && o < 0x140 && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3
+            if (o >= 0x100 && o < 0x180 && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3 (Ф3е: 0x140..)
             if (o >= 0x2000) { ring[(o - 0x2000) >> 2] = v; return; }
             if (o >= 0x1000 && o < 0x1800) { sdbuf[(o - 0x1000) >> 2] = v & 0xff; return; }
             if (o == 0x80) { sd_sector = v; return; }
@@ -565,6 +565,9 @@ int main(int argc, char **argv) {
     if (sd_path) { FILE *q = fopen(sd_path, "wb"); fwrite(sdf.data(), 1, sdf.size(), q); fclose(q); }
     if (midif) fclose(midif);
     tot.instr = ninstr;
+    if (qsp.pcmds) printf("QSPERSP cmds %llu segs %llu pixels %llu texel reads (halfword reuse) %llu frame writes (pairs) %llu\n",
+                          (unsigned long long)qsp.pcmds, (unsigned long long)qsp.psegs, (unsigned long long)qsp.pix,
+                          (unsigned long long)qsp.p_trd, (unsigned long long)qsp.p_pwr);
     printf("FP");
     for (int k = 0; k < FC_N; k++) printf(" %s %llu", fc_name[k], (unsigned long long)fcnt[k]);
     printf("\n");

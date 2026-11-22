@@ -341,10 +341,12 @@ SCSRAM  ?=
 # Ф3д: QOPT=1 -> KG_QOPT (shorter FPU chains: ceil by fcvt rup, the last span steps by a reciprocal table,
 # integer izi in D_DrawZSpans)
 QOPT    ?=
+# Ф3е: HWPERSP=1 -> KG_HWPERSP: the perspective of D_DrawSpans8 in the drawer (needs HWSPAN=1 SCSRAM=1)
+HWPERSP ?=
 # Ф3в: QX = extra compiler / LTO code generation flags (the -mtune / scheduling tries), QXN = its name (build dir)
 QX      ?=
 QXN     ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(QXN),-$(QXN))
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(HWPERSP),-p)$(if $(QXN),-$(QXN))
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -361,7 +363,7 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
            $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o)
-QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT)
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \

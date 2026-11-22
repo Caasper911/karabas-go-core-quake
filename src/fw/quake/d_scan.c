@@ -343,6 +343,16 @@ PQ_FASTTEXT void D_DrawSpans8 (espan_t *pspan)
 #ifdef KG_HWSPAN
 	kg_span_tex(pbase, cachewidth);   /* karabas: the texture (surface cache block) of the span drawer */
 #endif
+#ifdef KG_HWPERSP
+	/* karabas Ф3е: the perspective of the whole surface in the drawer; the z too (no D_DrawZSpans after it) */
+	kg_persp_surface(d_sdivzorigin, d_sdivzstepu, d_sdivzstepv, d_tdivzorigin, d_tdivzstepu, d_tdivzstepv,
+	                 d_ziorigin, d_zistepu, d_zistepv, sadjust, tadjust, bbextents, bbextentt);
+	do {
+		kg_pspan(pspan->u, pspan->v, pspan->count);
+	} while ((pspan = pspan->pnext) != NULL);
+	pq_combined_z_active = 1;
+	return;
+#endif
 
 #if HW_PERSP_ACCEL
 	// HW perspective + UV MAD + HW address gen + DMA span list:

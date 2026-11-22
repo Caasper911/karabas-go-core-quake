@@ -45,7 +45,9 @@ struct Mem { int owner = 0; int busy = 0; uint32_t last = 0xffffffffu; }; // own
 // halfword write (QS_ZPIX); the CPU accesses to the SRAM at >= QFENCE (z-buffer + frames) and the FRAME
 // write wait while the drawer has work.
 #include "qspan_model.h"
-struct QCmd { bool z; int n; std::vector<uint8_t> miss; };
+// Ф3е: pz = a perspective span (PSPAN): per pixel also a z write, and QSpan::QS_SEG clocks of arithmetic before
+// each 16-pixel segment (the reciprocal and the multiplies; no memory)
+struct QCmd { bool z; int n; std::vector<uint8_t> miss; bool pz = false; };
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s dump.bin [options]\n", argv[0]); return 2; }
@@ -98,6 +100,7 @@ int main(int argc, char **argv) {
     QSpan qs;
     std::deque<QCmd> qq;
     int qi = 0, qphase = 0, qwait = 0;
+    bool qseg = false;
     const size_t QDEPTH = 4;
     const uint32_t QFENCE = QSpan::ZB;
     uint64_t q_busy_cyc = 0, q_full_cyc = 0, q_fence_cyc = 0;
@@ -133,16 +136,22 @@ int main(int argc, char **argv) {
                     if (++qi == c.n) { qq.pop_front(); qi = 0; }
                 }
             } else {
-                if (qphase == 0) {
+                if (qphase == 0 && c.pz && (qi & 15) == 0 && !qseg) { qseg = true; qwait = QSpan::QS_SEG - 1; }
+                else if (qphase == 0) {
                     uint8_t m = c.miss[qi];
                     if (m == 0) qphase = 1;
                     else {
                         int r = m == 1 ? 1 : 0, cost = m == 1 ? QSpan::QS_FILL : QSpan::QS_SRD;
                         if (mem[r].owner == 0 && mem[r].busy == 0) { mem[r].busy = cost; qwait = cost - 1; qphase = 1; }
                     }
-                } else if (mem[0].owner == 0 && mem[0].busy == 0) {
-                    mem[0].busy = QSpan::QS_PIX; qwait = QSpan::QS_PIX - 1; qphase = 0;
-                    if (++qi == c.n) { qq.pop_front(); qi = 0; }
+                } else if (qphase == 1 && mem[0].owner == 0 && mem[0].busy == 0) {
+                    mem[0].busy = QSpan::QS_PIX; qwait = QSpan::QS_PIX - 1;
+                    qphase = c.pz ? 2 : 0;
+                    if (!c.pz) { qseg = false; if (++qi == c.n) { qq.pop_front(); qi = 0; } }
+                } else if (qphase == 2 && mem[0].owner == 0 && mem[0].busy == 0) {
+                    mem[0].busy = QSpan::QS_ZPIX; qwait = QSpan::QS_ZPIX - 1; qphase = 0;
+                    if (((qi + 1) & 15) == 0) qseg = false;
+                    if (++qi == c.n) { qq.pop_front(); qi = 0; qseg = false; }
                 }
             }
         }
@@ -175,7 +184,7 @@ int main(int argc, char **argv) {
             // Quake Ф3: a SPAN / ZSPAN write waits while the queue is full, the FRAME write until it is empty
             if (dp.active && dio && dp.left == 1 && top->dBusWishbone_WE) {
                 uint32_t o = daddr & 0x3fff;
-                if (((o == 0x120 || o == 0x124) && qq.size() >= QDEPTH) || (o == 0x04 && qbusy)) { dp.left = 2; q_full_cyc++; }
+                if (((o == 0x120 || o == 0x124 || o == 0x178) && qq.size() >= QDEPTH) || (o == 0x04 && qbusy)) { dp.left = 2; q_full_cyc++; }
             }
             if (dp.active && --dp.left == 0) {
                 dp.active = false;
@@ -195,10 +204,11 @@ int main(int argc, char **argv) {
                             fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true;
                         }
                         else if (o >= 0x400 && o < 0x800) pal[(o - 0x400) >> 2] = v;
-                        else if (o >= 0x100 && o < 0x140) {   // Quake Ф3: the drawer
+                        else if (o >= 0x100 && o < 0x180) {   // Quake Ф3: the drawer (Ф3е: 0x140..)
                             qs.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1);
                             if (o == 0x120) qq.push_back({false, (int)((v >> 16) & 0x1ff) + 1, qs.miss});
                             if (o == 0x124) qq.push_back({true, (int)((v >> 16) & 0x1ff) + 1, {}});
+                            if (o == 0x178) { QCmd q{false, (int)((v >> 17) & 0x1ff) + 1, qs.miss}; q.pz = true; qq.push_back(q); }
                         }
                         else if (o == 0x08) { exit_code = (int)v; done = true; }
                     } else {
