@@ -334,7 +334,11 @@ FLOAT   ?= soft
 QARGS   ?= +timedemo demo1
 QHWARGS ?= +_snd_mixahead 0.15
 HW      ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)
+# Ф3: HWSPAN=1 -> the span drawer (quake_span) does the texture and z spans (src/fw/quake/d_scan.c KG_HWSPAN)
+HWSPAN  ?=
+# Ф3а: SCSRAM=1 -> the surface cache in the SRAM 0x020000..0x1fffff (the drawer reads the texels there)
+SCSRAM  ?=
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -351,7 +355,7 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
            $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o)
-QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"')
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
@@ -359,7 +363,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -Wno-error=int-conversion -Wno-error=return-mismatch \
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I.
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/kg_hwspan.h
 QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/dataslot.h
 QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(if $(HW),$(QHWARGS),$(QARGS))))
 
@@ -404,7 +408,7 @@ $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
 quake-hw:
-	$(MAKE) quake FLOAT=f HW=1
+	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN)
 
 clean:
 	rm -rf build-*

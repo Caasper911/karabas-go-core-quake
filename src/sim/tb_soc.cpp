@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <deque>
 #include "Vcpu.h"
 #include "verilated.h"
 // the Verilator of msys2 (Windows) links verilated.cpp that calls it
@@ -30,12 +31,21 @@ static std::vector<uint8_t> sram(SRAM_SIZE), sdram(SDRAM_SIZE);
 
 static uint8_t *host(uint32_t a, int &reg) {
     if (a < SRAM_SIZE) { reg = 0; return &sram[a]; }
+    if ((a >> 28) == 9) { reg = 0; return &sram[a & (SRAM_SIZE - 1)]; }   // Quake Ф3: the SRAM uncached (SRAM_UC)
     if (a - SDRAM_BASE < SDRAM_SIZE) { reg = 1; return &sdram[a - SDRAM_BASE]; }
     reg = -1; return nullptr;
 }
 
 struct Port { bool active = false; int left = 0; int reg = -1; };   // one bus transaction in flight
 struct Mem { int owner = 0; int busy = 0; uint32_t last = 0xffffffffu; }; // owner 0 none / 1 I / 2 D; busy = posted write
+
+// Quake Ф3: the span drawer (qspan_model.h for the data, at the command write) and its timing: a queue of
+// QDEPTH commands (a SPAN / ZSPAN write waits while it is full), per pixel a texel (an SDRAM line fill
+// QS_FILL or an SRAM read QS_SRD, both keep the memory busy) then a frame write (SRAM QS_PIX), per z a
+// halfword write (QS_ZPIX); the CPU accesses to the SRAM at >= QFENCE (z-buffer + frames) and the FRAME
+// write wait while the drawer has work.
+#include "qspan_model.h"
+struct QCmd { bool z; int n; std::vector<uint8_t> miss; };
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s dump.bin [options]\n", argv[0]); return 2; }
@@ -85,6 +95,12 @@ int main(int argc, char **argv) {
     int exit_code = -1;
     bool done = false;
     Port ip, dp;
+    QSpan qs;
+    std::deque<QCmd> qq;
+    int qi = 0, qphase = 0, qwait = 0;
+    const size_t QDEPTH = 4;
+    const uint32_t QFENCE = QSpan::ZB;
+    uint64_t q_busy_cyc = 0, q_full_cyc = 0, q_fence_cyc = 0;
     Mem mem[2];
     std::string line;
 
@@ -105,7 +121,33 @@ int main(int argc, char **argv) {
         bool ireq = top->iBusWishbone_CYC && top->iBusWishbone_STB;
         uint32_t daddr = (uint32_t)top->dBusWishbone_ADR << 2;
         uint32_t iaddr = (uint32_t)top->iBusWishbone_ADR << 2;
-        bool dio = daddr & 0x80000000u;
+        bool dio = (daddr >> 28) == 8;
+
+        // Quake Ф3: the drawer takes the memories before the CPU in this clock
+        if (qwait > 0) qwait--;
+        else if (!qq.empty()) {
+            QCmd &c = qq.front();
+            if (c.z) {
+                if (mem[0].owner == 0 && mem[0].busy == 0) {
+                    mem[0].busy = QSpan::QS_ZPIX; qwait = QSpan::QS_ZPIX - 1;
+                    if (++qi == c.n) { qq.pop_front(); qi = 0; }
+                }
+            } else {
+                if (qphase == 0) {
+                    uint8_t m = c.miss[qi];
+                    if (m == 0) qphase = 1;
+                    else {
+                        int r = m == 1 ? 1 : 0, cost = m == 1 ? QSpan::QS_FILL : QSpan::QS_SRD;
+                        if (mem[r].owner == 0 && mem[r].busy == 0) { mem[r].busy = cost; qwait = cost - 1; qphase = 1; }
+                    }
+                } else if (mem[0].owner == 0 && mem[0].busy == 0) {
+                    mem[0].busy = QSpan::QS_PIX; qwait = QSpan::QS_PIX - 1; qphase = 0;
+                    if (++qi == c.n) { qq.pop_front(); qi = 0; }
+                }
+            }
+        }
+        bool qbusy = !qq.empty();
+        if (qbusy) q_busy_cyc++;
 
         // data bus
         if (dreq) {
@@ -114,7 +156,9 @@ int main(int argc, char **argv) {
                 else if ((daddr >> 28) == 2 || (daddr >> 28) == 4) { dp.active = true; dp.left = 1; dp.reg = -2; n_pq++; } // Quake: PocketQuake debug VRAM / sysreg
                 else {
                     int r; if (!host(daddr, r)) { fprintf(stderr, "D access %08x\n", daddr); return 3; }
-                    if (mem[r].owner == 0 && mem[r].busy == 0) {
+                    bool fenced = qbusy && r == 0 && (daddr & (SRAM_SIZE - 1)) >= QFENCE;   // Quake Ф3
+                    if (fenced) q_fence_cyc++;
+                    if (mem[r].owner == 0 && mem[r].busy == 0 && !fenced) {
                         mem[r].owner = 2; dp.active = true; dp.reg = r;
                         if (top->dBusWishbone_WE) {
                             int hw = ((top->dBusWishbone_SEL & 3) ? 1 : 0) + ((top->dBusWishbone_SEL & 12) ? 1 : 0);
@@ -127,6 +171,11 @@ int main(int argc, char **argv) {
                         }
                     }
                 }
+            }
+            // Quake Ф3: a SPAN / ZSPAN write waits while the queue is full, the FRAME write until it is empty
+            if (dp.active && dio && dp.left == 1 && top->dBusWishbone_WE) {
+                uint32_t o = daddr & 0x3fff;
+                if (((o == 0x120 || o == 0x124) && qq.size() >= QDEPTH) || (o == 0x04 && qbusy)) { dp.left = 2; q_full_cyc++; }
             }
             if (dp.active && --dp.left == 0) {
                 dp.active = false;
@@ -146,11 +195,17 @@ int main(int argc, char **argv) {
                             fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true;
                         }
                         else if (o >= 0x400 && o < 0x800) pal[(o - 0x400) >> 2] = v;
+                        else if (o >= 0x100 && o < 0x140) {   // Quake Ф3: the drawer
+                            qs.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1);
+                            if (o == 0x120) qq.push_back({false, (int)((v >> 16) & 0x1ff) + 1, qs.miss});
+                            if (o == 0x124) qq.push_back({true, (int)((v >> 16) & 0x1ff) + 1, {}});
+                        }
                         else if (o == 0x08) { exit_code = (int)v; done = true; }
                     } else {
                         // Quake Ф0: US / SFX_POS at --mhz (Sys_FloatTime, the sound DMA position)
                         uint64_t us = (uint64_t)(cyc / mhz);
                         top->dBusWishbone_DAT_MISO = o == 0x0c ? (uint32_t)cyc : o == 0x1c ? (uint32_t)(cyc / 50000) : o == 0x20 ? wad_size :
+                                                     o == 0x13c ? (QSpan::stat() | (qbusy ? 1u : 0u)) :
                                                      o == 0x40 ? (uint32_t)us : o == 0x70 ? (uint32_t)(us * 11025 / 1000000) & 2047 : 0;
                     }
                 } else if (dp.reg == -2) {
@@ -189,6 +244,9 @@ int main(int argc, char **argv) {
         cyc++;
     }
     if (!line.empty()) printf("%s\n", line.c_str());
+    printf("QSPAN cmds %llu z %llu pixels %llu z %llu fills %llu sram reads %llu; busy %.1f %%, CPU waits: queue / frame %.2f %%, SRAM fence %.2f %%\n",
+           (unsigned long long)qs.cmds, (unsigned long long)qs.zcmds, (unsigned long long)qs.pix, (unsigned long long)qs.zpix,
+           (unsigned long long)qs.fills, (unsigned long long)qs.srd, 100.0 * q_busy_cyc / cyc, 100.0 * q_full_cyc / cyc, 100.0 * q_fence_cyc / cyc);
     printf("END cycles %llu exit %d%s pocket-io %llu\n", (unsigned long long)cyc, exit_code, done ? "" : " (max)",
            (unsigned long long)n_pq);
     top->final();

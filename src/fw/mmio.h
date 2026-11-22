@@ -48,3 +48,25 @@
 #define MMIO_DRW_STAT  MMIO_REG(0xdc)
 #define DRW_ID         0xd7u
 #define SRAM_UC        0x90000000u  /* the SRAM, uncached (bit 31: the IO range of VexRiscv) */
+
+/* Quake Ф3: the span drawer (quake_span.v; functional model in src/sim/qspan_model.h). Texture spans of the
+   surface cache (SDRAM) into the work frame FB_BASE and z spans into the z-buffer QSP_ZB (SRAM), queued.
+   TEX: the texture (the surface cache block): bit 28 = 1 SDRAM (offset 24..0) / 0 SRAM (offset 21..0); TW: its
+   row bytes (cachewidth);
+   S / T / SSTEP / TSTEP: 16.16 texel position and steps (as d_scan.c); IZI / IZISTEP: 1/z 16.16 (z = izi >> 16);
+   a write of SPAN / ZSPAN = { count - 1 (24..16, up to 512), pixel offset in the frame (15..0) } queues the
+   command with the values written before. STAT: 31..24 = QSP_ID, bit 0 busy. The CPU accesses to the SRAM wait
+   while the drawer is busy (the order of the frame); the CPU reads the z-buffer through SRAM_UC. */
+#define MMIO_QSP_TEX     MMIO_REG(0x100)
+#define MMIO_QSP_TW      MMIO_REG(0x104)
+#define MMIO_QSP_S       MMIO_REG(0x108)
+#define MMIO_QSP_T       MMIO_REG(0x10c)
+#define MMIO_QSP_SSTEP   MMIO_REG(0x110)
+#define MMIO_QSP_TSTEP   MMIO_REG(0x114)
+#define MMIO_QSP_IZI     MMIO_REG(0x118)
+#define MMIO_QSP_IZISTEP MMIO_REG(0x11c)
+#define MMIO_QSP_SPAN    MMIO_REG(0x120)
+#define MMIO_QSP_ZSPAN   MMIO_REG(0x124)
+#define MMIO_QSP_STAT    MMIO_REG(0x13c)
+#define QSP_ID           0x95u
+#define QSP_ZB           0x3b0000u   /* the z-buffer in the SRAM: 320 x 200 x 16 bit (to 0x3cf3ff) */
