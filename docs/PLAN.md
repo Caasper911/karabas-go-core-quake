@@ -261,7 +261,7 @@ LBA → `IMG RDATA`) с кэшем секторов в SDRAM (вопрос 2); �
 |---|---:|---:|
 | base (`-mtune=rocket` по умолчанию) | 26.79 | 12.17 |
 | `-mtune=sifive-7-series` | −1.0 % | −0.6 % |
-| `-mtune=thead-c906` | −0.1 % | — |
+| `-mtune=thead-c906` | −0.1 % | зависло: gcc делает невыровненные обращения (690 в ISS), VexRiscv — ловушка; непригоден |
 | `-mtune=sifive-e76` | −1.0 % | −0.6 % |
 | `-fno-sched-pressure` | −0.2 % | +0.2 % |
 | `-funroll-loops` | −3.6 % | −1.4 % |
