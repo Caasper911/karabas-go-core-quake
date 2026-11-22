@@ -57,10 +57,17 @@ void VID_Shutdown(void)
 {
 }
 
+#ifdef KG_HW
+void kg_fps_overlay(unsigned char *fb);   /* kg_qhw.c: the OSD item FPS */
+#endif
+
 void VID_Update(vrect_t *rects)
 {
     (void)rects;
-    MMIO_FRAME = vid_frame++;
+#ifdef KG_HW
+    kg_fps_overlay((unsigned char *)FB_BASE);
+#endif
+    MMIO_FRAME = vid_frame++;   /* the board: the DMA copies the frame to the buffer not shown */
 }
 
 /* PocketQuake: called by SCR_UpdateScreen after a swap; one frame here */

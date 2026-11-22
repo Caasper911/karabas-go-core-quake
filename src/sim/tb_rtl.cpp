@@ -11,6 +11,8 @@
 // The frame hash (FNV-1a of 0x3f0000..+64000 and the palette) is printed at each FRAME write, as the
 // iss prints it: run both on the same dump and compare.
 //
+// Quake Ф1: built with -DKG_QUAKE (doom_soc WITH_DRAW 0, VexRiscv_FPU): no drawer state; compare the frame
+// hashes with tb_soc (the same CPU on memory models), not with the iss (its fmadd is not FpuPlugin's).
 // usage: tb_rtl <dump.bin> [--frames N] [--max Mcycles] [--trace-sdram N: print the first N commands]
 #include <cstdio>
 #include <cstdlib>
@@ -56,7 +58,11 @@ int main(int argc, char **argv) {
 
     Verilated::commandArgs(argc, argv);
     Vdoom_soc *t = new Vdoom_soc;
-    if (has_cmap) for (int i = 0; i < 2048; i++) t->rootp->doom_soc->__PVT__drw__DOT__cm_mem[i] = drw_cmap[i];
+#ifndef KG_QUAKE   // Quake: doom_soc WITH_DRAW 0 (no drawer)
+    if (has_cmap) for (int i = 0; i < 2048; i++) t->rootp->doom_soc->__PVT__g_drw__DOT__drw__DOT__cm_mem[i] = drw_cmap[i];
+#else
+    (void)has_cmap;
+#endif
     t->reset = 1;
     t->ld_kind = 0; t->ld_slot = 0; t->ld_start = 0; t->ld_active = 0; t->ld_end = 0;
     t->ld_addr = 0; t->ld_data = 0; t->ld_wr = 0;
@@ -103,17 +109,23 @@ int main(int argc, char **argv) {
             static bool was_reset = true;
             bool r = t->rootp->doom_soc->__PVT__cpu_reset;
             if (us0 && (r || was_reset)) { t->rootp->doom_soc->__PVT__us = us0; t->rootp->doom_soc->__PVT__ms = us0 / 1000; }
+            // Quake Ф1: WADSIZE as the dump has it (the pak is read through it: dataslot_read)
+            if (r || was_reset) t->rootp->doom_soc->__PVT__wad_size = wad_size;
             was_reset = r;
         }
         {
             auto *s = t->rootp->doom_soc;
+#ifndef KG_QUAKE
             if (s->__PVT__drw_busy) n_busy++;
             if (s->__PVT__io_hold) n_hold++;
             auto *c = s->cpu;   // the CPU on the SRAM (cached or 0x9...) while the drawer is busy: the fence
             uint32_t da = c->__PVT__dBusWishbone_ADR;
             bool sr = !(da >> 29 & 1) ? !(da >> 26 & 1) : (da >> 26 & 1);
             if (c->__PVT__dBusWishbone_CYC && c->__PVT__dBusWishbone_STB && sr && s->__PVT__drw_busy) n_fence++;
-            n_st[s->__PVT__drw__DOT__st & 7]++;
+            n_st[s->__PVT__g_drw__DOT__drw__DOT__st & 7]++;
+#else
+            (void)s;
+#endif
         }
         if (prof && (cyc & 255) == 0) fprintf(prof, "%08x %08x\n", (unsigned) t->rootp->doom_soc->cpu->__PVT__decode_to_execute_PC,
                                                       (unsigned) t->rootp->doom_soc->cpu->RegFilePlugin_regFile[1]);

@@ -17,8 +17,14 @@ void term_init(void) {}
 void term_clear(void) {}
 void term_setpos(int row, int col) { (void)row; (void)col; }
 int term_getpos(void) { return 0; }
-void term_putchar(char c) { MMIO_UART = (unsigned char)c; }
-void term_puts(const char *s) { while (*s) MMIO_UART = (unsigned char)*s++; }
+#ifdef KG_HW
+void kg_log_putc(char c);                /* kg_qhw.c: the log drawn by kg_exit_screen */
+#define LOG(c) kg_log_putc(c)
+#else
+#define LOG(c) ((void)0)
+#endif
+void term_putchar(char c) { MMIO_UART = (unsigned char)c; LOG(c); }
+void term_puts(const char *s) { while (*s) { LOG(*s); MMIO_UART = (unsigned char)*s++; } }
 
 void term_printf(const char *fmt, ...)
 {

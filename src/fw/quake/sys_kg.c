@@ -4,7 +4,8 @@
  * Ф0 (ISS bench): the pak (id1/pak0.pak) lies in memory at WAD_BASE (the sim loads it, MMIO_WADSIZE
  * = its size); Sys_File* read from there. On the board (Ф1) the same calls become sector reads of an F
  * image through the MCU (docs/PLAN.md, question 2). Time: MMIO_US. Console: MMIO_UART.
- * KG_BENCH: the end of a timedemo ("... fps") stops the sim (MMIO_EXIT 0).
+ * KG_BENCH: the end of a timedemo ("... fps") stops the sim (MMIO_EXIT 0). KG_HW (the board, Ф1): waits for
+ * the pak (kg_wait_pak), errors / quit show the log (kg_exit_screen), the input is in_kg.c.
  */
 
 #include "quakedef.h"
@@ -17,6 +18,10 @@ volatile unsigned int pq_dbg_stage = 0;   /* written by the engine (PocketQuake 
 volatile unsigned int pq_dbg_info = 0;
 
 extern void term_puts(const char *s);
+#ifdef KG_HW
+void kg_exit_screen(int code);           /* kg_qhw.c */
+void kg_wait_pak(void);
+#endif
 
 /*
 ===============================================================================
@@ -154,6 +159,9 @@ void Sys_Error(char *error, ...)
     term_puts("Sys_Error: ");
     term_puts(buf);
     term_puts("\n");
+#ifdef KG_HW
+    kg_exit_screen(1);
+#endif
     MMIO_EXIT = 1;
     while (1) {}
 }
@@ -175,6 +183,9 @@ void Sys_Printf(char *fmt, ...)
 
 void Sys_Quit(void)
 {
+#ifdef KG_HW
+    kg_exit_screen(0);
+#endif
     MMIO_EXIT = 0;
     while (1) {}
 }
@@ -194,7 +205,9 @@ float Sys_FloatTime(void)
 
 char *Sys_ConsoleInput(void) { return NULL; }
 void Sys_Sleep(void) {}
-void IN_SendKeyEvents(void) {}   /* PocketQuake: in_pocket.c polls the pads here; no input in the bench */
+#ifndef KG_HW
+void IN_SendKeyEvents(void) {}   /* PocketQuake: in_pocket.c polls the pads here; no input in the bench (board: in_kg.c) */
+#endif
 void Sys_SendKeyEvents(void) { IN_SendKeyEvents(); }
 void Sys_HighFPPrecision(void) {}
 void Sys_LowFPPrecision(void) {}
@@ -229,6 +242,9 @@ int main(void)
     }
     av[n] = NULL;
 
+#ifdef KG_HW
+    kg_wait_pak();
+#endif
     parms.basedir = ".";
     parms.cachedir = NULL;
     parms.argc = n;

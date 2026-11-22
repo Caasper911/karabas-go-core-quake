@@ -26,7 +26,7 @@
         },
         "minig": {
             "link": 2,
-            "build": "26112120",
+            "build": "26112201",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -45,18 +45,6 @@
         },
         {
             "type": "S",
-            "name": "Music",
-            "options": [
-                "OPL3",
-                "MIDI",
-                "Off"
-            ],
-            "default": 1,
-            "hotkey": "Menu+M",
-            "index": 1
-        },
-        {
-            "type": "S",
             "name": "Controls",
             "options": [
                 "Classic",
@@ -67,10 +55,10 @@
         },
         {
             "type": "S",
-            "name": "Mouse move",
+            "name": "Mouse look",
             "options": [
-                "Off",
-                "On"
+                "On",
+                "Off"
             ],
             "default": 0,
             "index": 4

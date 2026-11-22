@@ -326,10 +326,15 @@ $(XH)/hexen-hw.bin: $(XH)/hexen-hw.elf
 # laid over it (setjmp.S: its fs0..fs11 save only with F). FLOAT=soft: rv32im + soft-float (the CPU of the core now); FLOAT=f: rv32imf (VexRiscv
 # FpuPlugin, variant Б). The pak: ../sim/iss --wad id1/pak0.pak (at 0x10c00000).
 #   make quake [FLOAT=soft|f] [QARGS="+timedemo demo1"]  -> build-quake-$(FLOAT)/quake.bin
+# Ф1, the board firmware (roms/quake.bin of the .kg): KG_HW, rv32imf, in_kg.c + kg_qhw.c (input, the wait
+# for the pak, the log screen, FPS); the libc save region (0x13C00000, beyond our SDRAM) moved to SRAM 0x200000:
+#   make quake-hw [QHWARGS=..]  -> build-quake-f-hw/quake.bin
 QSRC    := ../../upstream/pocketquake/src/firmware
 FLOAT   ?= soft
 QARGS   ?= +timedemo demo1
-QB      := build-quake-$(FLOAT)
+QHWARGS ?= +_snd_mixahead 0.15
+HW      ?=
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -342,20 +347,21 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
            mathlib menu model net_link net_loop net_main net_none net_vcr nonintel pr_cmds pr_edict pr_exec \
            r_aclip r_alias r_bsp r_draw r_edge r_efrag r_light r_main r_misc r_part r_sky r_sprite r_surf \
            r_vars sbar screen sv_main sv_move sv_phys sv_user view wad world zone snd_dma snd_mix snd_mem \
-           printf_pocket in_null cd_null sys_kg vid_kg snd_kg
+           printf_pocket cd_null sys_kg vid_kg snd_kg $(if $(HW),in_kg,in_null)
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
-           $(QB)/libc/setjmp.o $(QB)/kg_plat.o
+           $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o)
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"')
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
            -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types \
            -Wno-error=int-conversion -Wno-error=return-mismatch \
-           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_BENCH '-DARGS="$(QARGS)"' -I$(QT)/quake -I$(QT)/libc -I.
+           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I.
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/sram_fill_accel.h
-QOVERT  := quake/kg_plat.c quake/dataslot.h
-QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(QARGS)))
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h
+QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/dataslot.h
+QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(if $(HW),$(QHWARGS),$(QARGS))))
 
 $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.[chS] $(QSRC)/*.h)
 	rm -rf $(QT)
@@ -371,6 +377,9 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# says: point it at the colormap in memory
 	sed -i 's|^#define CMAP_BRAM_PTR .*|#define CMAP_BRAM_PTR ((const unsigned char *)vid.colormap) /* karabas */|' $(QT)/quake/surface_accel.h
 	grep -q 'vid.colormap) /\* karabas' $(QT)/quake/surface_accel.h
+	# karabas: the save / config region of their libc in our SRAM (theirs is beyond our 32 MB SDRAM)
+	sed -i 's|^#define SAV_REGION_BASE  0x13C00000|#define SAV_REGION_BASE  0x00200000 /* karabas: SRAM */|' $(QT)/libc/file.c
+	grep -q 'SAV_REGION_BASE  0x00200000' $(QT)/libc/file.c
 	cp $(QOVER) $(QT)/quake/
 	cp $(QOVERT) $(QT)/
 	touch $@
@@ -386,7 +395,7 @@ $(QB)/libc/setjmp.o: $(QT)/.stamp
 	$(CROSS)gcc $(QMARCH) -c $(QT)/libc/setjmp.S -o $@
 $(QB)/crt0_q.o: quake/crt0_q.S
 	@mkdir -p $(dir $@)
-	$(CROSS)gcc $(QMARCH) -c $< -o $@
+	$(CROSS)gcc $(QMARCH) $(if $(HW),-DKG_HW) -c $< -o $@
 quake: $(QB)/quake.bin
 $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 	$(CROSS)gcc $(QMARCH) -O3 -flto -nostdlib -nostartfiles -T quake/link_q.ld -Wl,--gc-sections \
@@ -394,7 +403,9 @@ $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 	$(CROSS)size $@
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
+quake-hw:
+	$(MAKE) quake FLOAT=f HW=1
 
 clean:
 	rm -rf build-*
-.PHONY: all clean hw htic htic-hw hexen hexen-hw quake
+.PHONY: all clean hw htic htic-hw hexen hexen-hw quake quake-hw
