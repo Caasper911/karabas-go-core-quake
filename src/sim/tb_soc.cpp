@@ -10,8 +10,10 @@
 // MMIO at 0x80000000 as src/fw/mmio.h (MS = cycles / 50000, WADSIZE from the dump).
 // Prints "F,<frame>,<cycles>" per frame and the console.
 //
+// Quake Ф0: MMIO US / SFX_POS at --mhz (79.545), the PocketQuake debug VRAM / sysreg (0x2/0x4xxxxxxx) answered
+// (0x40000004 = cycles), counted as "pocket-io".
 // usage: tb_soc <dump.bin> [--sr-rd N] [--sr-wr N] [--sd-first N] [--sd-next N] [--sd-wr N] [--wbuf] [--ideal]
-//               [--frames N] [--max Mcycles]
+//               [--frames N] [--max Mcycles] [--mhz F]
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +43,8 @@ int main(int argc, char **argv) {
     bool wbuf = false, ideal = false;
     int stop_frames = -1, nframes = 0;
     uint64_t max_cycles = 2000ull * 1000 * 1000;
+    double mhz = 79.545;          // Quake Ф0: the clock for US / SFX_POS
+    uint64_t n_pq = 0;            // Quake Ф0: accesses to the PocketQuake debug VRAM / sysreg
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--sr-rd")) sr_rd = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--sr-wr")) sr_wr = atoi(argv[++i]);
@@ -51,6 +55,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--ideal")) ideal = true;
         else if (!strcmp(argv[i], "--frames")) stop_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max")) max_cycles = strtoull(argv[++i], 0, 10) * 1000000ull;
+        else if (!strcmp(argv[i], "--mhz")) mhz = atof(argv[++i]);
     }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 2; }
@@ -105,6 +110,7 @@ int main(int argc, char **argv) {
         if (dreq) {
             if (!dp.active) {
                 if (dio) { dp.active = true; dp.left = 1; dp.reg = -1; }
+                else if ((daddr >> 28) == 2 || (daddr >> 28) == 4) { dp.active = true; dp.left = 1; dp.reg = -2; n_pq++; } // Quake: PocketQuake debug VRAM / sysreg
                 else {
                     int r; if (!host(daddr, r)) { fprintf(stderr, "D access %08x\n", daddr); return 3; }
                     if (mem[r].owner == 0 && mem[r].busy == 0) {
@@ -126,14 +132,20 @@ int main(int argc, char **argv) {
                 if (dp.reg >= 0) mem[dp.reg].owner = 0;
                 top->dBusWishbone_ACK = 1;
                 if (dio) {
-                    uint32_t o = daddr & 0xff, v = top->dBusWishbone_DAT_MOSI;
+                    // Quake Ф0: the full offset (the palette at 0x400.., the SFX ring at 0x2000.. aliased FRAME / EXIT)
+                    uint32_t o = daddr & 0x3fff, v = top->dBusWishbone_DAT_MOSI;
                     if (top->dBusWishbone_WE) {
                         if (o == 0x00) { char c = (char)(v & 0xff); if (c == '\n') { printf("%s\n", line.c_str()); line.clear(); } else line += c; }
                         else if (o == 0x04) { printf("F,%u,%llu\n", v, (unsigned long long)(cyc - last_frame)); fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true; }
                         else if (o == 0x08) { exit_code = (int)v; done = true; }
                     } else {
-                        top->dBusWishbone_DAT_MISO = o == 0x0c ? (uint32_t)cyc : o == 0x1c ? (uint32_t)(cyc / 50000) : o == 0x20 ? wad_size : 0;
+                        // Quake Ф0: US / SFX_POS at --mhz (Sys_FloatTime, the sound DMA position)
+                        uint64_t us = (uint64_t)(cyc / mhz);
+                        top->dBusWishbone_DAT_MISO = o == 0x0c ? (uint32_t)cyc : o == 0x1c ? (uint32_t)(cyc / 50000) : o == 0x20 ? wad_size :
+                                                     o == 0x40 ? (uint32_t)us : o == 0x70 ? (uint32_t)(us * 11025 / 1000000) & 2047 : 0;
                     }
+                } else if (dp.reg == -2) {
+                    top->dBusWishbone_DAT_MISO = daddr == 0x40000004u ? (uint32_t)cyc : 0;
                 } else {
                     int r; uint8_t *p = host(daddr, r);
                     if (top->dBusWishbone_WE) {
@@ -168,7 +180,8 @@ int main(int argc, char **argv) {
         cyc++;
     }
     if (!line.empty()) printf("%s\n", line.c_str());
-    printf("END cycles %llu exit %d%s\n", (unsigned long long)cyc, exit_code, done ? "" : " (max)");
+    printf("END cycles %llu exit %d%s pocket-io %llu\n", (unsigned long long)cyc, exit_code, done ? "" : " (max)",
+           (unsigned long long)n_pq);
     top->final();
     delete top;
     return done ? 0 : 1;

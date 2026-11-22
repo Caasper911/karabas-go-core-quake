@@ -92,3 +92,6 @@ src/xlnx_auto_0_xdb/
 src/iseconfig/
 *.pak
 *.PAK
+# Quake Ф0: XST runs of src/measure/xst_cpu.sh
+src/measure/*/
+src/sim/iss_*

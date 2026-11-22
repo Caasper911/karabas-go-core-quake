@@ -319,6 +319,82 @@ $(XH)/hexen-hw.elf: $(XHOBJ) htic/kg_htic_hw.c font8.h syscalls.c crt0_hw.S mmio
 $(XH)/hexen-hw.bin: $(XH)/hexen-hw.elf
 	$(CROSS)objcopy -O binary $< $@
 
+# Quake Ф0 bench (docs/PLAN.md): the engine of PocketQuake (upstream/pocketquake/src/firmware: quake/ +
+# its libc/) with its FPGA accelerators off and our platform (quake/: sys_kg, vid_kg, snd_kg, kg_plat,
+# sram_fill_accel.h, crt0_q.S, link_q.ld). The submodule stays untouched: the tree is copied to
+# $(QB)/src, every "#define HW_<name> 1" of its headers and sources (r_surf.c has one) becomes 0 (the software paths), our files are
+# laid over it (setjmp.S: its fs0..fs11 save only with F). FLOAT=soft: rv32im + soft-float (the CPU of the core now); FLOAT=f: rv32imf (VexRiscv
+# FpuPlugin, variant Б). The pak: ../sim/iss --wad id1/pak0.pak (at 0x10c00000).
+#   make quake [FLOAT=soft|f] [QARGS="+timedemo demo1"]  -> build-quake-$(FLOAT)/quake.bin
+QSRC    := ../../upstream/pocketquake/src/firmware
+FLOAT   ?= soft
+QARGS   ?= +timedemo demo1
+QB      := build-quake-$(FLOAT)
+QT      := $(QB)/src
+ifeq ($(FLOAT),f)
+QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
+else
+QMARCH  := -march=rv32im_zicsr -mabi=ilp32
+endif
+# their QUAKE_SRCS without the Pocket platform (sys / vid / in / cd / snd_pocket, audio_timer, net_link)
+QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console crc cvar d_edge d_fill d_init \
+           d_modech d_part d_polyse draw d_scan d_sky d_sprite d_surf d_vars d_zpoint host host_cmd keys \
+           mathlib menu model net_link net_loop net_main net_none net_vcr nonintel pr_cmds pr_edict pr_exec \
+           r_aclip r_alias r_bsp r_draw r_edge r_efrag r_light r_main r_misc r_part r_sky r_sprite r_surf \
+           r_vars sbar screen sv_main sv_move sv_phys sv_user view wad world zone snd_dma snd_mix snd_mem \
+           printf_pocket in_null cd_null sys_kg vid_kg snd_kg
+QLIBC   := memory string ctype stdlib qsort time math file
+QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
+           $(QB)/libc/setjmp.o $(QB)/kg_plat.o
+# their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
+QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
+           -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
+           -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types \
+           -Wno-error=int-conversion -Wno-error=return-mismatch \
+           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_BENCH '-DARGS="$(QARGS)"' -I$(QT)/quake -I$(QT)/libc -I.
+QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/sram_fill_accel.h
+QOVERT  := quake/kg_plat.c quake/dataslot.h
+QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(QARGS)))
+
+$(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.[chS] $(QSRC)/*.h)
+	rm -rf $(QT)
+	mkdir -p $(QT)
+	cp -r $(QSRC)/quake $(QSRC)/libc $(QSRC)/*.h $(QT)/
+	sed -i -E 's/^(#define[ \t]+HW_[A-Z0-9_]+)[ \t]+1\b/\1 0/' $(QT)/quake/*.h $(QT)/quake/*.c
+	sed -i -e '/f[sl]w fs0,/i #ifdef __riscv_flen' -e '/f[sl]w fs11,/a #endif' $(QT)/libc/setjmp.S
+	# karabas: no 500 us busy wait per server message during the signon (their workaround, a read of the
+	# Pocket cycle counter 0x40000004: cached on our CPU, it would never end on the board)
+	sed -i 's|while (\*cyc - t < 50000) {}|(void)t; /* karabas: no signon delay */|' $(QT)/quake/cl_parse.c
+	grep -q 'karabas: no signon delay' $(QT)/quake/cl_parse.c
+	# karabas: the colormap copy in the Pocket BRAM (0x54000000) is used by d_polyse.c whatever HW_CMAP_BRAM
+	# says: point it at the colormap in memory
+	sed -i 's|^#define CMAP_BRAM_PTR .*|#define CMAP_BRAM_PTR ((const unsigned char *)vid.colormap) /* karabas */|' $(QT)/quake/surface_accel.h
+	grep -q 'vid.colormap) /\* karabas' $(QT)/quake/surface_accel.h
+	cp $(QOVER) $(QT)/quake/
+	cp $(QOVERT) $(QT)/
+	touch $@
+$(QOPTS):
+	mkdir -p $(QB)
+	rm -f $(QB)/opts-*; touch $@
+$(QB)/quake/sys_kg.o: $(QOPTS)
+$(QB)/%.o: $(QT)/.stamp mmio.h
+	@mkdir -p $(dir $@)
+	$(CROSS)gcc $(QCFLAGS) $(if $(filter quake/d_% quake/r_%,$*),$(QRFLAGS)) -c $(QT)/$*.c -o $@
+$(QB)/libc/setjmp.o: $(QT)/.stamp
+	@mkdir -p $(dir $@)
+	$(CROSS)gcc $(QMARCH) -c $(QT)/libc/setjmp.S -o $@
+$(QB)/crt0_q.o: quake/crt0_q.S
+	@mkdir -p $(dir $@)
+	$(CROSS)gcc $(QMARCH) -c $< -o $@
+quake: $(QB)/quake.bin
+$(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
+	$(CROSS)gcc $(QMARCH) -O3 -flto -nostdlib -nostartfiles -T quake/link_q.ld -Wl,--gc-sections \
+	  -Wl,-Map,$(QB)/quake.map -o $@ $(QB)/crt0_q.o $(QOBJ) -lgcc
+	$(CROSS)size $@
+$(QB)/quake.bin: $(QB)/quake.elf
+	$(CROSS)objcopy -O binary $< $@
+
 clean:
 	rm -rf build-*
-.PHONY: all clean hw htic htic-hw hexen hexen-hw
+.PHONY: all clean hw htic htic-hw hexen hexen-hw quake
