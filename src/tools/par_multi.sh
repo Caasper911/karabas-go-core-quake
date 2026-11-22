@@ -1,18 +1,19 @@
 #!/bin/bash
 # Parallel MAP / PAR of the Mini G with several cost tables (karabas-go-core-quake Ф3б), each in its own copy
 # on D: (the XST netlist is reused). A watchdog kills a PAR that has not written its log for 15 minutes.
-# usage: par_multi.sh 4 5 6
+# usage: [BOARD=go|mini|minig] par_multi.sh 4 5 6   (default minig)
 R=/c/hobby/karabas-go-core-quake
-B=/d/.claude/karabas-go-core-quake/par
+BD=${BOARD:-minig}
+B=/d/.claude/karabas-go-core-quake/par/$BD
 for t in "$@"; do
   d=$B/t$t
   rm -rf $d; mkdir -p $d/src
   cp -rp $R/modules $d/
   cd $R/src
-  cp -p Makefile karabas_minig.prj karabas_minig.xst karabas_minig.ut karabas_minig.ucf karabas_minig.ngc core.json $d/src/
+  cp -p Makefile karabas_$BD.prj karabas_$BD.xst karabas_$BD.ut karabas_$BD.ucf karabas_$BD.ngc core.json $d/src/
   cp -rp rtl $d/src/
-  touch $d/src/karabas_minig.ngc
-  ( cd $d/src && make minig-impl MAP_T_minig=$t > ../build.log 2>&1; echo "DONE $?" >> ../build.log ) &
+  touch $d/src/karabas_$BD.ngc
+  ( cd $d/src && make $BD-impl MAP_T_$BD=$t > ../build.log 2>&1; echo "DONE $?" >> ../build.log ) &
 done
 # watchdog
 while true; do
@@ -35,7 +36,7 @@ while true; do
 done
 for t in "$@"; do
   d=$B/t$t/src
-  echo "== t$t: $(grep -m1 -E 'All constraints were met|timing errors|constraints not met' $d/karabas_minig.twr 2>/dev/null)"
-  sed -n "/TS_pll_clkout_0_ = PERIOD/,\$p" $d/karabas_minig.twr 2>/dev/null | grep -m1 "Minimum period is"
+  echo "== t$t: $(grep -m1 -E 'All constraints were met|timing errors|constraints not met' $d/karabas_$BD.twr 2>/dev/null)"
+  sed -n "/TS_pll_clkout_0_ = PERIOD/,\$p" $d/karabas_$BD.twr 2>/dev/null | grep -m1 "Minimum period is"
   grep -E "Timing Score" $B/t$t/build.log | tail -1
 done

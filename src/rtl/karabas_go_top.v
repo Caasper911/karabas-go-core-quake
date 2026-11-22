@@ -327,7 +327,7 @@ wire [31:0] aud_wd, aud_rd, aud_rd_audio, aud_rd_sd;
 // the aud_* bus of doom_soc: doom_sd for 0x80..0x9c and 0x1000..0x17fc, doom_audio for the rest
 assign aud_rd = (aud_off[13:11] == 3'b010 || aud_off[11:5] == 7'b0000100) ? aud_rd_sd : aud_rd_audio;
 
-doom_soc #(.CLK_NUM(10'd875), .CLK_DEN(10'd11)) soc (  // 875 / 11 MHz
+doom_soc #(.CLK_NUM(10'd875), .CLK_DEN(10'd11), .WITH_DRAW(0), .WITH_QSPAN(1)) soc (  // 875 / 11 MHz; Quake: no Doom drawer, quake_span (Ф3)
 	.clk(clk_sys),
 	.reset(areset | sw_reset),
 	.ld_kind(ld_kind), .ld_slot(ld_slot), .ld_start(ld_start), .ld_active(ld_active), .ld_end(ld_end),
@@ -385,7 +385,7 @@ kg_l2_osd_overlay osd (
 // ------------------------------------------------------------------ audio
 
 wire signed [15:0] snd_l, snd_r;
-doom_audio #(.CLK_HZ(79545455), .OPL_STEP(33'd2684359)) audio (
+doom_audio #(.CLK_HZ(79545455), .OPL_STEP(33'd2684359), .WITH_OPL(0)) audio (  // Quake: no OPL3
 	.clk(clk_sys),
 	.reset(areset),
 	.io_we(aud_we), .io_off(aud_off), .io_wd(aud_wd), .io_rd(aud_rd_audio),
