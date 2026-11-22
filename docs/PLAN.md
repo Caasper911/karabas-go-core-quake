@@ -153,6 +153,38 @@ Doom (`drw`) 474 LUT / 201 слайс / 6 RAMB16. Ожидание Mini G: ~9.2 
 убрать Music (OPL3 / MIDI), оставить Controls, Mouse move, FPS, Reset. Чтение pak секторами (`Sys_File*` → запрос
 LBA → `IMG RDATA`) с кэшем секторов в SDRAM (вопрос 2); замер скорости чтения и времени загрузки уровня на плате.
 
+Порядок (решение пользователя 2026-11-22, «начинай» на план после Ф0): **Ф1** — pak0 целиком в SDRAM через FL,
+как WAD Hexen (shareware помещается), только Mini G; **Ф1б** — чтение pak секторами через пункты `F`.
+
+### Результаты Ф1 (ветка `f1-minig`, 2026-11-22)
+
+- **RTL.** `doom_soc` параметр `WITH_DRAW` (0: нет `doom_draw`, его регистры читаются 0), `doom_audio` параметр
+  `WITH_OPL` (0: нет OPL3, MIDI остаётся) — через `generate`, по умолчанию 1 (RTL Hexen прежний). Топ Mini G:
+  оба 0; `karabas_minig.prj`: `VexRiscv_FPU.v` (модуль `VexRiscv`, порты те же). Go / Mini пока прежние (Ф3).
+- **Проверка RTL.** `obj_rtl_q/tb_rtl` (весь SoC Quake: `VexRiscv_FPU`, без рисователя, 875 / 11 MHz) против
+  `obj_VexRiscv_FPU/tb_soc` (тот же процессор на моделях памяти, хэш кадра добавлен) с дампа кадра 300 стенда F:
+  **12 кадров, хэши совпали бит в бит**, ошибок SDRAM 0, копии кадра DMA верные, 3.6–4.5 млн тактов на кадр.
+  Против ISS сравнивать нельзя: `fmadd` у FpuPlugin округляет по-своему (`ftest`: 20 расхождений ±1 ulp при
+  округлении произведения в ISS, 34 при честном FMA; бывают и не IEEE-ближайшие), игра от них расходится.
+  `tb_rtl` берёт `WADSIZE` из дампа (pak читается через него).
+- **ISE Mini G (MAP, cost table 2):** LUT 8 619 (57 %), слайсов 3 037 (80 %), FF 7 977, RAMB16 40 / 52, RAMB8 10,
+  DSP 9 (Hexen: 54 % / 81 %). PAR: **все ограничения выполнены**, `clk_sys` 79.545 MHz — худший путь 12.216 из
+  12.571 нс (запас 0.355 нс, как у Hexen). Битстрим Mini G сборки 26112201.
+- **`src/quake.kg`** (26112201): **только Mini G** — у Go / Mini пока битстримы Hexen без FPU (прошивка Quake на
+  них упала бы на первой команде F); `core.json` вернёт их в Ф3. `hexen.kg` убран из репо.
+- **Прошивка платы** `make -C src/fw quake-hw` → `build-quake-f-hw/quake.bin` (476 KB), `make -C src rom` →
+  `roms/quake.bin`: `KG_HW` — `in_kg.c` (клавиатура USB → `Key_Event`, модификаторы Ctrl / Shift / Alt, мышь:
+  кнопки K_MOUSE1..3, обзор yaw + pitch при Mouse look On, иначе dy — вперёд / назад; геймпады: стрелки, A огонь,
+  B прыжок, C бег, Start Enter, X Esc, Y `/` след. оружие, Z стрейф, Mode Tab; Controls WASD: W / S / A / D в
+  игре), `kg_qhw.c` (ожидание pak с тестовой картинкой, журнал на экран при `Sys_Error` / выходе, FPS по пункту
+  OSD), `crt0_q.S` восстанавливает `.data` при перезапуске (новый pak, Reset), аргументы `+_snd_mixahead 0.15`.
+  Звук — кольцо SFX `doom_audio` (11025 Hz, как Hexen). В ISS (без timedemo) крутит демо-режим.
+- Обращения движка PocketQuake к их адресам 0x2xxxxxxx / 0x4xxxxxxx на нашей шине попадают в начало SRAM
+  (`doom_soc` смотрит биты 31 / 28): безвредно (Quake там ничего не держит, кадр 0x3f0000). Область сохранений
+  их libc (0x13C00000, вне SDRAM) перенесена в SRAM 0x200000 — сохранения и `config.cfg` пока только в памяти (Ф2).
+- **OSD:** PAK (FL, .pak, `/quake`, Menu+F1), Controls (Classic / WASD, индекс 3), Mouse look (On / Off, 4),
+  FPS (5), Reset; Music убран.
+
 ### Ф2 — звук (PCM-поток), сохранения, конфиг
 
 ### Ф3 — скорость (FPU / RTL-помощники / кэши), Go и Mini, выпуск
@@ -167,8 +199,11 @@ LBA → `IMG RDATA`) с кэшем секторов в SDRAM (вопрос 2); �
 - [x] 2026-11-22: обзор портов; основа — `upstream/pocketquake` (thinkelastic/PocketQuake 5792fe2) вместо
   quakegeneric (решение пользователя).
 - [x] 2026-11-22: Ф0 (ветка `f0-iss`): стенд PocketQuake soft / F, RV32F в ISS, `VexRiscv_FPU` + проверка,
-  замеры, площадь — GO с FPU (ждёт решения пользователя).
-- RTL пока как у Hexen; битстримы в git — Hexen (Go / Mini 26112121, Mini G 26112120). Большие файлы симуляции
+  замеры, площадь — GO с FPU (пользователь: «начинай» Ф1).
+- [x] 2026-11-22: Ф1 (ветка `f1-minig`): Mini G с FPU без рисователя / OPL3 (тайминг выполнен, 57 % LUT),
+  `tb_rtl` = `tb_soc` бит в бит, прошивка `quake-hw`, `quake.kg` (только Mini G). **На плате не проверено.**
+- [ ] Ф1б: pak секторами через `F`; Ф2: звук, сохранения; Ф3: Go / Mini.
+- Битстримы в git: Mini G — Quake (26112201), Go / Mini — ещё Hexen (26112121). Большие файлы симуляции
   (профили, дампы) — в `D:\.claude\karabas-go-core-quake\sim` (на C мало места).
 
 # История: Hexen (karabas-go-core-hexen)
