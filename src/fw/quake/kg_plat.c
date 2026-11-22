@@ -59,11 +59,13 @@ int dataslot_read(uint32_t slot_id, uint32_t offset, void *dest, uint32_t length
     memcpy(dest, (const void *)(WAD_BASE + offset), length);
     return 0;
 }
+#ifndef KG_HW   /* the board: kg_qsave.c (the save file) */
 int dataslot_write(uint16_t slot_id, uint32_t offset, const void *src, uint32_t length)
 {
     (void)slot_id; (void)offset; (void)src; (void)length;
     return -1;
 }
+#endif
 int32_t dataslot_load(uint16_t slot_id, void *dest, uint32_t max_length)
 {
     (void)slot_id; (void)dest; (void)max_length;

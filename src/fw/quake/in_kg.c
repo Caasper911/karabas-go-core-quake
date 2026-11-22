@@ -99,10 +99,19 @@ void IN_Init(void) {}
 void IN_Shutdown(void) {}
 void IN_Commands(void) {}
 
+void Host_WriteConfiguration(void);
+
 void IN_SendKeyEvents(void)
 {
     unsigned n = MMIO_KBDN, j, jr, m, mb;
     int i, b;
+    /* Ф2: the menu closed -> the config into the save file (the settings and the bindings change there; a
+       board is switched off, not quit; the console at start / demos would write it at every boot) */
+    static int in_ui;
+    int ui = key_dest == key_menu;
+    if (in_ui && !ui)
+        Host_WriteConfiguration();
+    in_ui = ui;
     if (n != last_kbdn) {
         unsigned k0 = MMIO_KBD0, k1 = MMIO_KBD1;
         unsigned char rep[7] = { k0 & 0xff, (k0 >> 8) & 0xff, (k0 >> 16) & 0xff, k0 >> 24,

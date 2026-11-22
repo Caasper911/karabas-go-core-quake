@@ -15,7 +15,8 @@
  * cannot fit, the old sectors are given back first.
  * A save file of Ф1 (KGHEXEN1: hexen.cfg / chocolate-hexen.cfg at fixed sectors) is converted.
  * When a file does not fit at all it stays a RAM file (the game goes on); kg_save_full is set and the
- * game shows SAVE FILE FULL (hexen/kg_hexen_hw.c). */
+ * game shows SAVE FILE FULL (hexen/kg_hexen_hw.c).
+ * Quake Ф2 (KG_QUAKE, src/fw/quake/kg_qsave.c): magic KGQUAKE1, kept config.cfg and s0..s9.sav; no Ф1 conversion. */
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -44,7 +45,11 @@ typedef struct {
 } entry_t;
 _Static_assert(sizeof(entry_t) == 32, "the entry is 32 bytes");
 
+#ifdef KG_QUAKE
+static const char MAGIC[8] = "KGQUAKE1";   /* Quake Ф2: config.cfg and the savegames s0..s9.sav */
+#else
 static const char MAGIC[8] = "KGHEXEN2";
+#endif
 static union { uint8_t b[DIR_SECTORS * 512]; struct { char magic[8]; uint32_t pad[2]; entry_t e[DIR_N]; } d; } dir;
 static int ready;
 int kg_save_full;                   /* a file did not fit (hexen/kg_hexen_hw.c shows it) */
@@ -88,6 +93,12 @@ static int dir_write_all(void) {
 static const char *kept_name(const char *path) {
     const char *b = strrchr(path, '/');
     b = b ? b + 1 : path;
+#ifdef KG_QUAKE
+    /* Quake Ф2: config.cfg, s<0..9>.sav (the slots of the libc of PocketQuake) */
+    if (!strcmp(b, "config.cfg")) return b;
+    if (b[0] == 's' && b[1] >= '0' && b[1] <= '9' && !strcmp(b + 2, ".sav")) return b;
+    return NULL;
+#endif
     if (!strcmp(b, "hexen.cfg") || !strcmp(b, "chocolate-hexen.cfg")) return b;
     /* hex<slot 0..5>.hxs or hex<slot><2 digits>.hxs */
     if (strncmp(b, "hex", 3) || b[3] < '0' || b[3] > '5') return NULL;
@@ -154,6 +165,7 @@ static int write_file(uint32_t start, const uint8_t *data, uint32_t n) {
 }
 
 /* ---- Ф1 save files (KGHEXEN1): the two configs at sectors 1 and 17, 16 sectors each */
+#ifndef KG_QUAKE
 static int convert_v1(const uint8_t *s0) {
     static const char *const names[2] = { "hexen.cfg", "chocolate-hexen.cfg" };
     uint32_t size[2];
@@ -178,6 +190,7 @@ static int convert_v1(const uint8_t *s0) {
     printf("Saves: converted the save file of Ф1\n");
     return ok;
 }
+#endif
 
 void kg_save_init(void) {
     ready = 0;
@@ -190,9 +203,12 @@ void kg_save_init(void) {
     for (int s = 0; s < DIR_SECTORS; s++)
         if (!sec_read((uint32_t) s, dir.b + 512 * s)) { printf("Saves: read error\n"); ready = 0; return; }
     if (memcmp(dir.d.magic, MAGIC, 8)) {
+#ifndef KG_QUAKE
         if (!memcmp(dir.d.magic, "KGHEXEN1", 8)) {
             if (!convert_v1(dir.b)) { printf("Saves: write error\n"); ready = 0; return; }
-        } else {
+        } else
+#endif
+        {
             /* only a new file (all zeros) gets an empty directory: anything else is left alone */
             for (int i = 0; i < DIR_SECTORS * 512; i++) if (dir.b[i]) { printf("Saves: the save file is not ours, off\n"); ready = 0; st('X'); return; }
             memcpy(dir.d.magic, MAGIC, 8);
