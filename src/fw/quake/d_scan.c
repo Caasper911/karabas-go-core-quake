@@ -506,9 +506,19 @@ PQ_FASTTEXT void D_DrawSpans8 (espan_t *pspan)
 					/* Use float reciprocal instead of integer division.
 					 * fdiv.s is ~15 cycles vs div ~35 cycles, and we
 					 * already have z in a float register. */
+#ifdef KG_QOPT
+					/* karabas Ф3д: 65536 / (spancount - 1) from a table and an integer multiply instead of
+					   fdiv + fmul + fcvt (the FPU chain is ~40 clocks on VexRiscv) */
+					static const int kg_recip[16] = { 0, 65536, 32768, 21845, 16384, 13107, 10923, 9362,
+					                                  8192, 7282, 6554, 5958, 5461, 5041, 4681, 4369 };
+					int r = kg_recip[spancount - 1];
+					sstep = (int)(((long long)(snext - s) * r) >> 16);
+					tstep = (int)(((long long)(tnext - t) * r) >> 16);
+#else
 					float inv = 1.0f / (float)(spancount - 1);
 					sstep = (int)((float)(snext - s) * inv);
 					tstep = (int)((float)(tnext - t) * inv);
+#endif
 				}
 			}
 
@@ -588,6 +598,13 @@ PQ_FASTTEXT void D_DrawZSpans (espan_t *pspan)
 // FIXME: check for clamping/range problems
 // we count on FP exceptions being turned off to avoid range problems
 	izistep = (int)(d_zistepu * 0x8000 * 0x10000);
+#ifdef KG_QOPT
+	/* karabas Ф3д: 1/z of a span start from the first span of the surface and the integer gradients
+	   (32-bit modular arithmetic: exact whenever the result fits, as izi does), instead of a float chain
+	   per span; no float -> int64 (a libgcc call on rv32) */
+	int kg_izv = (int)(d_zistepv * 0x8000 * 0x10000);
+	int kg_iz0 = 0, kg_u0 = 0, kg_v0 = 0, kg_first = 1;
+#endif
 
 	do
 	{
@@ -595,6 +612,17 @@ PQ_FASTTEXT void D_DrawZSpans (espan_t *pspan)
 
 		count = pspan->count;
 
+#ifdef KG_QOPT
+		if (kg_first) {
+			kg_first = 0;
+			kg_u0 = pspan->u;
+			kg_v0 = pspan->v;
+			zi = d_ziorigin + (float)kg_v0*d_zistepv + (float)kg_u0*d_zistepu;
+			kg_iz0 = (int)(zi * 0x8000 * 0x10000);
+		}
+		izi = (int)((unsigned)kg_iz0 + (unsigned)(pspan->v - kg_v0) * (unsigned)kg_izv +
+		            (unsigned)(pspan->u - kg_u0) * (unsigned)izistep);
+#else
 	// calculate the initial 1/z
 		du = (float)pspan->u;
 		dv = (float)pspan->v;
@@ -602,6 +630,7 @@ PQ_FASTTEXT void D_DrawZSpans (espan_t *pspan)
 		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
 	// we count on FP exceptions being turned off to avoid range problems
 		izi = (int)(zi * 0x8000 * 0x10000);
+#endif
 
 #if HW_ZSPAN_ACCEL
 		if (r_hwzspan.value) {

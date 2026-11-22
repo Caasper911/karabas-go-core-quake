@@ -297,6 +297,20 @@ float → fixed, приближённое 1/x), перспектива в бло
   FPU уже в списке критичных по таймингу (сборка Ф3б, cost table 2).
 - Генератор `GenCoreKgFpu.scala`: опция `--fpuAsyncRf` (для таких проб).
 
+#### Ф3д — короче цепочки FPU в прошивке (`QOPT=1`, `KG_QOPT`, 2026-11-22)
+
+- Профиль **по тактам** (`tb_rtl --prof`, зал `start`, 12 кадров): `D_DrawSpans8` 19.8 %, `R_ClipEdge` (+ `R_EmitEdge`)
+  14.0, `R_GenerateSpans_Array` 9.9, `R_RenderFace` 6.1, `R_RecursiveWorldNode` 5.9, `R_ScanEdges` 5.7,
+  `D_DrawSurfaces` 5.6, `D_DrawZSpans` 5.3 (по инструкциям `R_ScanEdges` 9.1 — в тактах меньше, FPU в ней нет).
+  Горячие строки: в спанах цепочки `z = 0x10000 / zi` → `fmul` → `fcvt`; в рёбрах — `pq_ceilf_int` (`fcvt`, `fcvt`,
+  `flt`), проверки плоскостей, `TransformVector`.
+- Правки: `ceil` одной командой `fcvt.w.s …, rup` (sed в копии `r_draw.c`); шаги последнего отрезка спана —
+  таблица 65536 / n и целое умножение вместо `fdiv` + `fmul` + `fcvt`; `izi` спанов поверхности — от первого спана
+  целочисленными градиентами (32 бита по модулю). Первая попытка с float → int64 была хуже (−3.6 %): на rv32
+  это вызов `__fixsfdi` из libgcc.
+- `tb_soc` (VexRiscv_FPU + блок), 20 кадров: **`start` 12.17 → 12.66 fps (+4.0 %), demo1 26.79 → 27.28 (+1.8 %)**;
+  кадры ISS: отличаются 23 / 1 пикселей из 64000 (шаг последнего отрезка — округление на единицу).
+
 ## Состояние
 
 - [x] 2026-11-22: клон core-hexen, подмодули `upstream/quake` и `upstream/quakegeneric` (заменён, см. ниже); `core.json`: id `quake`,

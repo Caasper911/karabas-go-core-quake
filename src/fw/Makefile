@@ -338,10 +338,13 @@ HW      ?=
 HWSPAN  ?=
 # Ф3а: SCSRAM=1 -> the surface cache in the SRAM 0x020000..0x1fffff (the drawer reads the texels there)
 SCSRAM  ?=
+# Ф3д: QOPT=1 -> KG_QOPT (shorter FPU chains: ceil by fcvt rup, the last span steps by a reciprocal table,
+# integer izi in D_DrawZSpans)
+QOPT    ?=
 # Ф3в: QX = extra compiler / LTO code generation flags (the -mtune / scheduling tries), QXN = its name (build dir)
 QX      ?=
 QXN     ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QXN),-$(QXN))
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(QXN),-$(QXN))
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -358,7 +361,7 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
            $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o)
-QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM)
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
@@ -391,6 +394,9 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
 	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
 	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
+	# karabas Ф3д (KG_QOPT): ceil of R_EmitEdge in one fcvt.w.s with the rounding mode rup (was fcvt, fcvt, flt)
+	sed -i '/^\tint i = (int)v;$$/i #if defined(KG_QOPT) \&\& defined(__riscv_flen)\n\tint r; __asm__ ("fcvt.w.s %0, %1, rup" : "=r"(r) : "f"(v)); return r;   /* karabas */\n#endif' $(QT)/quake/r_draw.c
+	grep -q 'rup" : "=r"(r)' $(QT)/quake/r_draw.c
 	cp $(QOVER) $(QT)/quake/
 	cp $(QOVERT) $(QT)/
 	touch $@
