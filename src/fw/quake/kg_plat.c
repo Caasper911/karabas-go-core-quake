@@ -74,3 +74,9 @@ int dataslot_get_size(uint16_t slot_id, uint32_t *size_out)
     *size_out = slot_id == PAK0_SLOT_ID ? MMIO_WADSIZE : 0;
     return *size_out ? 0 : -1;
 }
+
+/* Ф3: wait until the span drawer (quake_span) has no work (d_surf.c before a surface is built, KG_HWSPAN) */
+void kg_span_idle(void)
+{
+    while (MMIO_QSP_STAT & 1) {}
+}

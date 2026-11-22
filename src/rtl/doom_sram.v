@@ -14,6 +14,8 @@
    time, so that the CPU waits a little only; vid_busy until done.
  - drawer (Ф1в, doom_draw): drw_req asks a write of the lanes drw_sel of halfword drw_adr, acked by
    drw_ack; after the CPU (which waits while the drawer is busy: doom_soc), before nothing else.
+   Quake Ф3 (quake_span): drw_we 0 = a read of halfword drw_adr instead, drw_rdat with drw_ack (as a DMA
+   read: the address out two clocks, the data a clock later).
  - DMA: dma_req (a pulse) copies dma_len halfwords from dma_src to dma_dst (the frame drawn by the CPU
    into a buffer of the video, docs/PLAN.md Ф1): in runs of DMA_RUN halfwords, the video first between
    runs; the CPU waits until the copy is done (the frame must not change under it). dma_busy until done.
@@ -55,6 +57,8 @@ module doom_sram #(
 	input wire [20:0] drw_adr,
 	input wire [1:0] drw_sel,
 	input wire [15:0] drw_dat,
+	input wire drw_we,                    // Quake Ф3: 0 = read (drw_rdat)
+	output reg [15:0] drw_rdat = 16'd0,
 	output reg drw_ack = 1'b0,
 
 	// DMA (halfword addresses)
@@ -87,7 +91,7 @@ assign MD_O = md_out;
 assign MD_OE_N = md_oe_n;
 
 localparam [3:0] S_IDLE = 4'd0, S_RD = 4'd1, S_W1 = 4'd2, S_W2 = 4'd3, S_W3 = 4'd4, S_VID = 4'd5,
-	S_DR = 4'd6, S_DW1 = 4'd7, S_DW2 = 4'd8, S_DW3 = 4'd9;
+	S_DR = 4'd6, S_DW1 = 4'd7, S_DW2 = 4'd8, S_DW3 = 4'd9, S_QR = 4'd10;
 
 reg [3:0] st = S_IDLE;
 wire wb_req = wb_cyc & wb_stb & ~wb_ack;
@@ -177,6 +181,12 @@ always @(posedge clk) begin
 				rd_last <= (wb_cti == 3'b010) ? 5'd16 : 5'd2;
 				st <= S_RD;
 			end
+		end else if (drw_req && !drw_ack && !drw_we) begin
+			// Quake Ф3: the drawer reads a halfword (S_QR: as S_DR)
+			cpu_last <= 1'b1;
+			ma_r <= drw_adr;
+			d_ph <= 2'd0;
+			st <= S_QR;
 		end else if (drw_req && !drw_ack) begin
 			// the drawer: one halfword (S_W1..S_W3 with q_hi 0 and lanes 3..2 empty)
 			cpu_last <= 1'b1;
@@ -287,6 +297,15 @@ always @(posedge clk) begin
 			ma_r <= d_src + 21'd1;
 			d_ph <= 2'd0;
 			st <= S_DR;
+		end
+	end
+	// Quake Ф3: the drawer's read: md_in holds the halfword at d_ph 2 (as S_DR)
+	S_QR: begin
+		d_ph <= d_ph + 2'd1;
+		if (d_ph == 2'd2) begin
+			drw_rdat <= md_in;
+			drw_ack <= 1'b1;
+			st <= S_IDLE;
 		end
 	end
 	default: st <= S_IDLE;

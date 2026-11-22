@@ -384,6 +384,10 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# karabas: the save / config region of their libc in our SRAM (theirs is beyond our 32 MB SDRAM)
 	sed -i 's|^#define SAV_REGION_BASE  0x13C00000|#define SAV_REGION_BASE  0x00200000 /* karabas: SRAM */|' $(QT)/libc/file.c
 	grep -q 'SAV_REGION_BASE  0x00200000' $(QT)/libc/file.c
+	# karabas Ф3: before a surface is (re)built (D_SCAlloc / R_DrawSurface may overwrite a surface the span drawer
+	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
+	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
+	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
 	cp $(QOVER) $(QT)/quake/
 	cp $(QOVERT) $(QT)/
 	touch $@
@@ -408,7 +412,7 @@ $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
 quake-hw:
-	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN)
+	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM)
 
 clean:
 	rm -rf build-*

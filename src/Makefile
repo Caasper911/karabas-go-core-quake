@@ -47,7 +47,7 @@ JSON = core.json
 # map / par options (cost table 2 by default, the rule of all the cores)
 MAP_T_go ?= 2
 MAP_T_mini ?= 3   # 2 missed by 40 ps in kg_mcu2 img (26111822)
-MAP_T_minig ?= 2
+MAP_T_minig ?= 6   # 2 / 3 missed or hung with quake_span (Ф3б, 85 % slices); 4 and 6 met (26112202)
 MAP = -logic_opt off -ol high -xe n -xt 3 -register_duplication off -r 4 -global_opt off -mt 2 -detail -ir off -pr b -lc auto -power off
 PAR = -ol high -xe c -mt 4
 
@@ -60,8 +60,8 @@ all: $(BOARDS)
 prj_src = $(shell sed -n 's/^[a-z]* work "\(.*\)"/\1/p' $(1) 2>/dev/null)
 
 rom:
-	$(MAKE) -C fw quake-hw
-	cp fw/build-quake-f-hw/quake.bin roms/quake.bin
+	$(MAKE) -C fw quake-hw HWSPAN=1 SCSRAM=1
+	cp fw/build-quake-f-hw-span-scs/quake.bin roms/quake.bin
 
 kg: $(JSON) roms/quake.bin
 	$(PYTHON) tools/check_osd.py $(JSON)
