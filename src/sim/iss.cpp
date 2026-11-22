@@ -5,6 +5,8 @@
 // without write allocate) counts per frame and per memory: I$ misses, D$ read misses, stores
 // (bytes / halfwords / words), so model.py can price each memory without Verilator.
 //
+// Quake Ф0: RV32F (FF,<frame>,... per frame and an FP line at the end), the PocketQuake debug VRAM / sysreg
+// (0x2xxxxxxx / 0x4xxxxxxx: writes dropped, reads 0, 0x40000004 = cycles; "pocket-io" at the end).
 // usage: iss <fw.bin> --org 0x10000000 [--wad file] [--max Minstr] [--icache B] [--dcache B]
 //            [--prof file: pc + ra every 256 instr] [--prof-from F]
 //            [--dump-at F file: after frame F write SRAM + SDRAM (36 MB) with a resume stub at 0x11fff000]
@@ -23,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
 #include <vector>
 #include <string>
 
@@ -78,6 +81,41 @@ struct Drawer {
 };
 static Drawer drw;
 
+// Quake Ф0: RV32F (single precision; IEEE arithmetic of the host, round to nearest even except the
+// fcvt.w(u).s rounding modes; NaN results canonical 0x7fc00000; fflags not kept). Counts per kind
+// for the FPU model (VexRiscv FpuPlugin latencies: model.py).
+static uint32_t fr[32], fcsr_v, fdummy;
+enum { FC_LD, FC_ST, FC_ADD, FC_MUL, FC_DIV, FC_SQRT, FC_FMA, FC_CVT, FC_CMP, FC_MV, FC_MINMAX, FC_N };
+static const char *fc_name[FC_N] = { "flw", "fsw", "fadd/sub", "fmul", "fdiv", "fsqrt", "fmadd", "fcvt", "fcmp", "fmv/sgnj/class", "fmin/max" };
+static uint64_t fcnt[FC_N];
+static inline float F(uint32_t r) { float v; memcpy(&v, &fr[r], 4); return v; }
+static inline uint32_t U(float v) { uint32_t u; if (std::isnan(v)) return 0x7fc00000u; memcpy(&u, &v, 4); return u; }
+static inline uint32_t fbits(float v) { uint32_t u; memcpy(&u, &v, 4); return u; }
+static uint32_t fcvt_w(float v, int rm, bool uns) {
+    if (rm == 7) rm = (fcsr_v >> 5) & 7;
+    if (std::isnan(v)) return uns ? 0xffffffffu : 0x7fffffffu;
+    double d = v;
+    switch (rm) {
+    case 1: d = std::trunc(d); break;          // RTZ
+    case 2: d = std::floor(d); break;          // RDN
+    case 3: d = std::ceil(d); break;           // RUP
+    case 4: d = std::round(d); break;          // RMM
+    default: d = std::nearbyint(d); break;     // RNE
+    }
+    if (uns) { if (d <= 0) return 0; if (d >= 4294967295.0) return 0xffffffffu; return (uint32_t)d; }
+    if (d <= -2147483648.0) return 0x80000000u;
+    if (d >= 2147483647.0) return 0x7fffffffu;
+    return (uint32_t)(int32_t)d;
+}
+static uint32_t fclass(float v) {
+    uint32_t u = fbits(v); bool s = u >> 31;
+    if (std::isinf(v)) return s ? 1u : 128u;
+    if (std::isnan(v)) return (u & 0x00400000u) ? 512u : 256u;
+    if (v == 0) return s ? 8u : 16u;
+    if (std::fpclassify(v) == FP_SUBNORMAL) return s ? 4u : 32u;
+    return s ? 2u : 64u;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s fw.bin --org A [--wad f] [--max Minstr] [--icache B] [--dcache B] [--prof f] [--prof-from F]\n", argv[0]); return 2; }
     uint64_t max_instr = 20000ull * 1000 * 1000;
@@ -95,7 +133,7 @@ int main(int argc, char **argv) {
     uint64_t emitted = 0, wav_n = 0;
     uint32_t tcmp = 0, opl_addr = 0; bool ten = false;
     uint32_t mstatus = 0, mie = 0, mtvec = 0, mepc = 0, mcause = 0, mtval = 0;
-    uint64_t n_opl = 0, n_midi = 0, n_irq = 0;
+    uint64_t n_opl = 0, n_midi = 0, n_irq = 0, n_pq = 0;
     const char *sd_path = 0;
     std::vector<uint8_t> sdf;
     uint8_t sdbuf[512] = {0};
@@ -159,7 +197,10 @@ int main(int argc, char **argv) {
 
     uint32_t x[32] = {0}, pc = org;
     const uint32_t RES = 0x11fff000; // resume area (the last 4 KB of the SDRAM: the CPU fetches from the SDRAM only): stub, registers at +0x100, pc at +0x180
-    if (resume) { memcpy(x, &sdram[RES - SDRAM_BASE + 0x100], 128); x[0] = 0; memcpy(&pc, &sdram[RES - SDRAM_BASE + 0x180], 4); }
+    if (resume) {
+        memcpy(x, &sdram[RES - SDRAM_BASE + 0x100], 128); x[0] = 0; memcpy(&pc, &sdram[RES - SDRAM_BASE + 0x180], 4);
+        memcpy(fr, &sdram[RES - SDRAM_BASE + 0x300], 128); memcpy(&fcsr_v, &sdram[RES - SDRAM_BASE + 0x380], 4);  // Quake: F
+    }
     uint64_t ninstr = 0;
     Cnt tot, last;
     int exit_code = 0;
@@ -171,6 +212,10 @@ int main(int argc, char **argv) {
         exit(3);
     };
     auto ld = [&](uint32_t a, int sz) -> uint32_t {
+        if ((a >> 28) == 2 || (a >> 28) == 4) {           // Quake: PocketQuake debug VRAM / sysreg (0x40000004 = cycles)
+            n_pq++;
+            return a == 0x40000004u ? (uint32_t)ninstr : 0u;
+        }
         if ((a & 0xf0000000u) == 0x90000000u) {          // Ф1в: the SRAM uncached (the frame)
             uint32_t v = 0; tot.uc++;
             memcpy(&v, &sram[a & (SRAM_SIZE - 1)], sz);
@@ -203,6 +248,7 @@ int main(int argc, char **argv) {
         return v;
     };
     auto st = [&](uint32_t a, uint32_t v, int sz) {
+        if ((a >> 28) == 2 || (a >> 28) == 4) { n_pq++; return; }   // Quake: PocketQuake debug VRAM / sysreg
         if ((a & 0xf0000000u) == 0x90000000u) {          // Ф1в: the SRAM uncached (the frame)
             tot.st[0]++; if (sz < 4) tot.st8[0]++;
             memcpy(&sram[a & (SRAM_SIZE - 1)], &v, sz);
@@ -257,6 +303,16 @@ int main(int argc, char **argv) {
                        (unsigned long long)(tot.uc - last.uc), (unsigned long long)(tot.dcol - last.dcol),
                        (unsigned long long)(tot.dspan - last.dspan), (unsigned long long)(tot.dpx - last.dpx));
                 last = tot;
+                {   // Quake Ф0: "FF,<frame>,<count of each FP kind in this frame>" (fc_name order), only with F code
+                    static uint64_t flast[FC_N];
+                    uint64_t any = 0;
+                    for (int k = 0; k < FC_N; k++) any |= fcnt[k];
+                    if (any) {
+                        printf("FF,%u", v);
+                        for (int k = 0; k < FC_N; k++) { printf(",%llu", (unsigned long long)(fcnt[k] - flast[k])); flast[k] = fcnt[k]; }
+                        printf("\n");
+                    }
+                }
                 if (prof_from >= 0 && (int)v + 1 >= prof_from) sampling = true;
                 if ((int)v == dump_at) dump_now = true;
                 for (auto &kk : keys) if (kk.first == nframes) { kbd0 = (uint32_t)kk.second << 8; kbdn++; }
@@ -366,6 +422,49 @@ int main(int argc, char **argv) {
                 }
             }
             break;
+        case 0x07:                    // flw
+            if (f3 != 2) { fprintf(stderr, "illegal %08x at %08x\n", in, pc); return 3; }
+            fr[rd] = ld(a + immi, 4); fcnt[FC_LD]++; wr = false; break;
+        case 0x27:                    // fsw
+            if (f3 != 2) { fprintf(stderr, "illegal %08x at %08x\n", in, pc); return 3; }
+            st(a + imms, fr[rs2], 4); fcnt[FC_ST]++; wr = false; break;
+        case 0x43: case 0x47: case 0x4b: case 0x4f: {   // fmadd / fmsub / fnmsub / fnmadd .s
+            float p = F(rs1), q = F(rs2), c = F(in >> 27);
+            float v = op == 0x43 ? std::fma(p, q, c) : op == 0x47 ? std::fma(p, q, -c)
+                    : op == 0x4b ? std::fma(-p, q, c) : std::fma(-p, q, -c);
+            fr[rd] = U(v); fcnt[FC_FMA]++; wr = false; break;
+        }
+        case 0x53: {                  // OP-FP, single
+            float p = F(rs1), q = F(rs2);
+            wr = false;
+            switch (f7) {
+            case 0x00: fr[rd] = U(p + q); fcnt[FC_ADD]++; break;
+            case 0x04: fr[rd] = U(p - q); fcnt[FC_ADD]++; break;
+            case 0x08: fr[rd] = U(p * q); fcnt[FC_MUL]++; break;
+            case 0x0c: fr[rd] = U(p / q); fcnt[FC_DIV]++; break;
+            case 0x2c: fr[rd] = U(std::sqrt(p)); fcnt[FC_SQRT]++; break;
+            case 0x10: {
+                uint32_t sa = fr[rs1] & 0x7fffffffu, sb = fr[rs2] & 0x80000000u;
+                fr[rd] = f3 == 0 ? sa | sb : f3 == 1 ? sa | (sb ^ 0x80000000u) : sa | ((fr[rs1] ^ fr[rs2]) & 0x80000000u);
+                fcnt[FC_MV]++; break;
+            }
+            case 0x14: {
+                float v;
+                if (std::isnan(p) && std::isnan(q)) v = NAN;
+                else if (std::isnan(p)) v = q; else if (std::isnan(q)) v = p;
+                else if (p == 0 && q == 0) v = (f3 == 0) == ((fr[rs1] >> 31) != 0) ? p : q;   // -0 < +0
+                else v = f3 == 0 ? (p < q ? p : q) : (p > q ? p : q);
+                fr[rd] = U(v); fcnt[FC_MINMAX]++; break;
+            }
+            case 0x60: r = fcvt_w(p, f3, rs2 == 1); wr = true; fcnt[FC_CVT]++; break;
+            case 0x68: fr[rd] = U(rs2 == 1 ? (float)a : (float)(int32_t)a); fcnt[FC_CVT]++; break;
+            case 0x70: r = f3 == 0 ? fr[rs1] : fclass(p); wr = true; fcnt[FC_MV]++; break;
+            case 0x78: fr[rd] = a; fcnt[FC_MV]++; break;
+            case 0x50: r = f3 == 2 ? p == q : f3 == 1 ? p < q : p <= q; wr = true; fcnt[FC_CMP]++; break;
+            default: fprintf(stderr, "illegal fp %08x at %08x after %llu\n", in, pc, (unsigned long long)ninstr); return 3;
+            }
+            break;
+        }
         case 0x0f: wr = false; break; // fence
         case 0x73: {
             if (in == 0x30200073u) { // mret
@@ -373,7 +472,8 @@ int main(int argc, char **argv) {
             }
             uint32_t csr = in >> 20, *cp = 0;
             switch (csr) { case 0x300: cp = &mstatus; break; case 0x304: cp = &mie; break; case 0x305: cp = &mtvec; break;
-                           case 0x341: cp = &mepc; break; case 0x342: cp = &mcause; break; case 0x343: cp = &mtval; break; }
+                           case 0x341: cp = &mepc; break; case 0x342: cp = &mcause; break; case 0x343: cp = &mtval; break;
+                           case 0x003: cp = &fcsr_v; break; case 0x001: case 0x002: cp = &fdummy; break; }
             uint32_t old = cp ? *cp : (csr == 0x344 ? ((ten && (int32_t)((uint32_t)(ninstr / 32) - tcmp) >= 0) ? 0x80u : 0u) : 0u);
             uint32_t src = (f3 & 4) ? rs1 : a;
             if (cp) { if ((f3 & 3) == 1) *cp = src; else if ((f3 & 3) == 2) *cp |= src; else if ((f3 & 3) == 3) *cp &= ~src; }
@@ -395,15 +495,32 @@ int main(int argc, char **argv) {
             code.push_back((0x11fffu << 12) | (31 << 7) | 0x37); // lui x31, 0x11fff
             code.push_back(I(0x180, 31, 2, 5, 0x03));             // lw x5, pc
             code.push_back(I(0x341, 5, 1, 0, 0x73));              // csrw mepc, x5
-            code.push_back((0x2u << 12) | (5 << 7) | 0x37);       // lui x5, 2
-            code.push_back(I(-2048, 5, 0, 5, 0x13));              // addi x5, x5, -2048 (0x1800: MPP = M)
+            // Quake Ф0: code with F (any FP op seen) also gets mstatus.FS and its f registers + fcsr back:
+            // a block at +0x400 (fcsr at +0x380, f0..f31 at +0x300), jumped to and back from the stub
+            bool withf = false;
+            for (int k = 0; k < FC_N; k++) withf |= fcnt[k] != 0;
+            auto J = [](int off) { uint32_t u = (uint32_t)off; return ((u >> 20 & 1) << 31) | ((u >> 1 & 0x3ff) << 21) | ((u >> 11 & 1) << 20) | ((u >> 12 & 0xff) << 12) | 0x6f; };
+            code.push_back(((withf ? 0x4u : 0x2u) << 12) | (5 << 7) | 0x37); // lui x5, 2 (4 with F)
+            code.push_back(I(-2048, 5, 0, 5, 0x13));              // addi x5, x5, -2048 (0x1800: MPP = M; 0x3800: + FS)
             code.push_back(I(0x300, 5, 1, 0, 0x73));              // csrw mstatus, x5
+            size_t back = 0;
+            if (withf) { code.push_back(J(0x400 - 4 * (int)code.size())); back = code.size(); }
             for (int r = 1; r <= 31; r++) code.push_back(I(0x100 + 4 * r, 31, 2, r, 0x03));
             code.push_back(0x30200073);                           // mret
             uint8_t *rb = &sdram[RES - SDRAM_BASE];
             memcpy(rb, code.data(), code.size() * 4);
             for (int r = 0; r < 32; r++) memcpy(rb + 0x100 + 4 * r, &x[r], 4);
             memcpy(rb + 0x180, &pc, 4);
+            if (withf) {
+                std::vector<uint32_t> fb;
+                fb.push_back(I(0x380, 31, 2, 5, 0x03));           // lw x5, fcsr
+                fb.push_back(I(0x003, 5, 1, 0, 0x73));            // csrw fcsr, x5
+                for (int r = 0; r < 32; r++) fb.push_back(I(0x300 + 4 * r, 31, 2, r, 0x07));   // flw fr, ..(x31)
+                fb.push_back(J(4 * (int)back - (0x400 + 4 * (int)fb.size())));                 // back to the x loads
+                memcpy(rb + 0x400, fb.data(), fb.size() * 4);
+                memcpy(rb + 0x300, fr, 128);
+                memcpy(rb + 0x380, &fcsr_v, 4);
+            }
             FILE *d = fopen(dump_path, "wb");
             fwrite(sram.data(), 1, SRAM_SIZE, d);
             fwrite(sdram.data(), 1, SDRAM_SIZE, d);
@@ -431,7 +548,11 @@ int main(int argc, char **argv) {
     if (sd_path) { FILE *q = fopen(sd_path, "wb"); fwrite(sdf.data(), 1, sdf.size(), q); fclose(q); }
     if (midif) fclose(midif);
     tot.instr = ninstr;
-    printf("END pc %08x ra %08x misaligned %llu\n", pc, x[1], (unsigned long long)misaligned);
+    printf("FP");
+    for (int k = 0; k < FC_N; k++) printf(" %s %llu", fc_name[k], (unsigned long long)fcnt[k]);
+    printf("\n");
+    printf("END pc %08x ra %08x misaligned %llu pocket-io %llu\n", pc, x[1], (unsigned long long)misaligned,
+           (unsigned long long)n_pq);
     printf("END instr %llu exit %d%s im %llu/%llu dm %llu/%llu st %llu/%llu (sram/sdram)\n", (unsigned long long)ninstr, exit_code, done ? "" : " (max)",
            (unsigned long long)tot.im[0], (unsigned long long)tot.im[1], (unsigned long long)tot.dm[0], (unsigned long long)tot.dm[1],
            (unsigned long long)tot.st[0], (unsigned long long)tot.st[1]);
