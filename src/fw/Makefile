@@ -369,7 +369,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -Wno-error=int-conversion -Wno-error=return-mismatch \
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/kg_hwspan.h
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/kg_hwspan.h
 QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/dataslot.h
 QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(if $(HW),$(QHWARGS),$(QARGS))))
 
@@ -394,9 +394,6 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
 	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
 	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
-	# karabas Ф3д (KG_QOPT): ceil of R_EmitEdge in one fcvt.w.s with the rounding mode rup (was fcvt, fcvt, flt)
-	sed -i '/^\tint i = (int)v;$$/i #if defined(KG_QOPT) \&\& defined(__riscv_flen)\n\tint r; __asm__ ("fcvt.w.s %0, %1, rup" : "=r"(r) : "f"(v)); return r;   /* karabas */\n#endif' $(QT)/quake/r_draw.c
-	grep -q 'rup" : "=r"(r)' $(QT)/quake/r_draw.c
 	cp $(QOVER) $(QT)/quake/
 	cp $(QOVERT) $(QT)/
 	touch $@
