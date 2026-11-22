@@ -45,6 +45,7 @@ int main(int argc, char **argv) {
     uint64_t max_cycles = 2000ull * 1000 * 1000;
     double mhz = 79.545;          // Quake Ф0: the clock for US / SFX_POS
     uint64_t n_pq = 0;            // Quake Ф0: accesses to the PocketQuake debug VRAM / sysreg
+    uint32_t pal[256] = {0};      // Quake Ф1: the palette for the frame hash
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--sr-rd")) sr_rd = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--sr-wr")) sr_wr = atoi(argv[++i]);
@@ -136,7 +137,15 @@ int main(int argc, char **argv) {
                     uint32_t o = daddr & 0x3fff, v = top->dBusWishbone_DAT_MOSI;
                     if (top->dBusWishbone_WE) {
                         if (o == 0x00) { char c = (char)(v & 0xff); if (c == '\n') { printf("%s\n", line.c_str()); line.clear(); } else line += c; }
-                        else if (o == 0x04) { printf("F,%u,%llu\n", v, (unsigned long long)(cyc - last_frame)); fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true; }
+                        else if (o == 0x04) {
+                            // Quake Ф1: + the frame hash (FNV-1a of 0x3f0000..+64000 and the palette), as iss / tb_rtl
+                            uint32_t h = 2166136261u;
+                            for (int i = 0; i < 64000; i++) h = (h ^ sram[0x3f0000 + i]) * 16777619u;
+                            for (int i = 0; i < 256; i++) h = (h ^ pal[i]) * 16777619u;
+                            printf("F,%u,%llu,%08x\n", v, (unsigned long long)(cyc - last_frame), h);
+                            fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true;
+                        }
+                        else if (o >= 0x400 && o < 0x800) pal[(o - 0x400) >> 2] = v;
                         else if (o == 0x08) { exit_code = (int)v; done = true; }
                     } else {
                         // Quake Ф0: US / SFX_POS at --mhz (Sys_FloatTime, the sound DMA position)

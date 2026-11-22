@@ -37,6 +37,11 @@ SECTIONS
         . = ALIGN(8);
         __bss_end = .;
     } > RAM
+    /* the copy of .data as loaded (crt0_q.S with KG_HW: a restart restores it) */
+    .data_save (NOLOAD) : ALIGN(8) {
+        __data_save = .;
+        . += __data_end - __data_start;
+    } > RAM
     . = ALIGN(64);
     _heap_start = .;
     __stack_top = ORIGIN(RAM) + LENGTH(RAM);

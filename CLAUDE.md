@@ -20,9 +20,15 @@ Doom history below). Follow the phases; record a changed decision in PLAN.md.
 The main open question is floating point: Quake is float everywhere, the CPU and the ISS (`src/sim/iss.cpp`) are
 rv32im. Ф0 measures soft-float in the ISS and decides between soft-float, a VexRiscv FPU (RV32F) and fixed point.
 
-No game data in git or in the .kg: the user loads `pak0.pak` from SD (OSD file item "PAK", dir `/quake`). Until Ф1
-`src/fw`, `src/rtl`, `src/sim` are the Hexen ones (targets `hexen`, `hexen-hw` still build); `make kg` needs
-`roms/quake.bin` (Ф1).
+No game data in git or in the .kg: the user loads `pak0.pak` from SD (OSD file item "PAK", dir `/quake`; test copy
+`~/Downloads/quake-sw/game/ID1/PAK0.PAK`, shareware 1.06).
+
+State (Ф1, branch `f1-minig`): Mini G = `VexRiscv_FPU` (32K / 32K + FpuPlugin), `doom_soc` WITH_DRAW 0,
+`doom_audio` WITH_OPL 0; `quake.kg` Mini G only (Go / Mini still have the Hexen bitstreams). Firmware: `make -C
+src/fw quake [FLOAT=soft|f]` (ISS bench, timedemo), `quake-hw` (board; `make -C src rom kg`). The engine tree is
+copied to the build dir and patched there (src/fw/Makefile, `karabas:`). Checks: `src/sim/ftest/run.sh` (RV32F ISS
+vs FpuPlugin), `obj_rtl_q/tb_rtl` vs `obj_VexRiscv_FPU/tb_soc` frame hashes (not vs the ISS: FpuPlugin fmadd
+rounds its own way), `qmodel.py` / `qcal.py` (fps). Big sim files go to `D:\.claude\karabas-go-core-quake`.
 
 ## Rules of the core
 

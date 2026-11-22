@@ -61,7 +61,7 @@ prj_src = $(shell sed -n 's/^[a-z]* work "\(.*\)"/\1/p' $(1) 2>/dev/null)
 
 rom:
 	$(MAKE) -C fw quake-hw
-	cp fw/build-quake-hw/quake-hw.bin roms/quake.bin
+	cp fw/build-quake-f-hw/quake.bin roms/quake.bin
 
 kg: $(JSON) roms/quake.bin
 	$(PYTHON) tools/check_osd.py $(JSON)

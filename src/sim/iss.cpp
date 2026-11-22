@@ -82,7 +82,8 @@ struct Drawer {
 static Drawer drw;
 
 // Quake Ф0: RV32F (single precision; IEEE arithmetic of the host, round to nearest even except the
-// fcvt.w(u).s rounding modes; NaN results canonical 0x7fc00000; fflags not kept). Counts per kind
+// fcvt.w(u).s rounding modes; NaN results canonical 0x7fc00000; fflags not kept). As the VexRiscv
+// FpuPlugin (src/sim/ftest): fmadd & co. round the product first (not fused), fsgnj* of a NaN = 0x7fc00000. Counts per kind
 // for the FPU model (VexRiscv FpuPlugin latencies: model.py).
 static uint32_t fr[32], fcsr_v, fdummy;
 enum { FC_LD, FC_ST, FC_ADD, FC_MUL, FC_DIV, FC_SQRT, FC_FMA, FC_CVT, FC_CMP, FC_MV, FC_MINMAX, FC_N };
@@ -430,9 +431,10 @@ int main(int argc, char **argv) {
             if (f3 != 2) { fprintf(stderr, "illegal %08x at %08x\n", in, pc); return 3; }
             st(a + imms, fr[rs2], 4); fcnt[FC_ST]++; wr = false; break;
         case 0x43: case 0x47: case 0x4b: case 0x4f: {   // fmadd / fmsub / fnmsub / fnmadd .s
+            // as VexRiscv FpuPlugin (ftest): not fused, the product is rounded first
             float p = F(rs1), q = F(rs2), c = F(in >> 27);
-            float v = op == 0x43 ? std::fma(p, q, c) : op == 0x47 ? std::fma(p, q, -c)
-                    : op == 0x4b ? std::fma(-p, q, c) : std::fma(-p, q, -c);
+            volatile float m = p * q;
+            float v = op == 0x43 ? m + c : op == 0x47 ? m - c : op == 0x4b ? c - m : -m - c;
             fr[rd] = U(v); fcnt[FC_FMA]++; wr = false; break;
         }
         case 0x53: {                  // OP-FP, single
@@ -447,6 +449,7 @@ int main(int argc, char **argv) {
             case 0x10: {
                 uint32_t sa = fr[rs1] & 0x7fffffffu, sb = fr[rs2] & 0x80000000u;
                 fr[rd] = f3 == 0 ? sa | sb : f3 == 1 ? sa | (sb ^ 0x80000000u) : sa | ((fr[rs1] ^ fr[rs2]) & 0x80000000u);
+                if (std::isnan(p)) fr[rd] = 0x7fc00000u;   // as FpuPlugin (ftest): a NaN in, the canonical NaN out
                 fcnt[FC_MV]++; break;
             }
             case 0x14: {

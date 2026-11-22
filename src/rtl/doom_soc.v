@@ -47,7 +47,9 @@ module doom_soc #(
 	// the clock in MHz = CLK_NUM / CLK_DEN (75 / 1; 875 / 11 = 79.545 MHz): US and MS count exactly
 	parameter [9:0] CLK_NUM = 10'd75,
 	parameter [9:0] CLK_DEN = 10'd1,
-	parameter [31:0] RESET_VECTOR = 32'h10000000
+	parameter [31:0] RESET_VECTOR = 32'h10000000,
+	// Quake (karabas): 0 = no doom_draw (its registers read 0, STAT without the id: the firmware draws itself)
+	parameter WITH_DRAW = 1
 ) (
 	input wire clk,
 	input wire reset,                     // the whole machine (PLL, the Reset item)
@@ -289,12 +291,24 @@ assign aud_we = d_req && d_io && !io_ack && !cpu_reset && d_we && aud_sel;
 wire drw_sel_io = io_low && io_off[11:8] == 4'h0 && io_off[7:5] == 3'b110;
 wire io_hold = drw_sel_io && d_we && (io_off[7:0] == 8'hcc || io_off[7:0] == 8'hd0) && drw_push_wait;
 wire drw_we = d_req && d_io && !io_ack && !cpu_reset && d_we && drw_sel_io && !io_hold;
+generate if (WITH_DRAW) begin : g_drw
 doom_draw drw (
 	.clk(clk), .reset(cpu_reset),
 	.io_we(drw_we), .io_off(io_off[7:0]), .io_wd(d_dat_o), .push_wait(drw_push_wait), .busy(drw_busy),
 	.sd_cyc(drw_sd_cyc), .sd_adr(drw_sd_adr), .sd_cti(drw_sd_cti), .sd_ack((own == O_DR) & sd_ack), .sd_dat(sd_dat),
 	.sr_req(drw_sr_req), .sr_adr(drw_sr_adr), .sr_sel(drw_sr_sel), .sr_dat(drw_sr_dat), .sr_ack(drw_sr_ack)
 );
+end else begin : g_nodrw
+assign drw_push_wait = 1'b0;
+assign drw_busy = 1'b0;
+assign drw_sd_cyc = 1'b0;
+assign drw_sd_adr = 23'd0;
+assign drw_sd_cti = 3'd0;
+assign drw_sr_req = 1'b0;
+assign drw_sr_adr = 21'd0;
+assign drw_sr_sel = 2'd0;
+assign drw_sr_dat = 16'd0;
+end endgenerate
 assign aud_off = io_off14;
 assign aud_wd = d_dat_o;
 reg [31:0] us = 32'd0, tcmp = 32'd0;
@@ -397,7 +411,7 @@ always @(posedge clk) begin
 				8'h38: io_dat <= { joy_r, joy_l };
 				8'h40: io_dat <= us;
 				8'h50: io_dat <= sw;
-				8'hdc: io_dat <= { 8'hd7, 23'd0, drw_busy };
+				8'hdc: io_dat <= WITH_DRAW ? { 8'hd7, 23'd0, drw_busy } : 32'd0;
 				default: io_dat <= aud_sel ? aud_rd : 32'd0;
 			endcase
 		end

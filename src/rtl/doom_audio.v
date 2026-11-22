@@ -22,7 +22,8 @@
 */
 module doom_audio #(
 	parameter CLK_HZ = 75000000,          // clk (kg_midi_tx: 31250 baud)
-	parameter [32:0] OPL_STEP = 33'd2847048 // 49716 * 2^32 / clk: 2847048 at 75 MHz, 2684359 at 875/11 MHz
+	parameter [32:0] OPL_STEP = 33'd2847048, // 49716 * 2^32 / clk: 2847048 at 75 MHz, 2684359 at 875/11 MHz
+	parameter WITH_OPL = 1                // Quake (karabas): 0 = no OPL3 (its registers do nothing, silent)
 ) (
 	input wire clk,
 	input wire reset,
@@ -74,6 +75,7 @@ always @(posedge clk) begin
 	end
 end
 
+generate if (WITH_OPL) begin : g_opl
 opl3_fm fm (
 	.clk(clk),
 	.reset_a(reset),
@@ -83,6 +85,10 @@ opl3_fm fm (
 	.out_l(fm_l),
 	.out_r(fm_r)
 );
+end else begin : g_noopl
+assign fm_l = 20'sd0;
+assign fm_r = 20'sd0;
+end endgenerate
 
 // ------------------------------------------------------------------ MIDI (clk)
 
