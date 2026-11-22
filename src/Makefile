@@ -47,7 +47,7 @@ JSON = core.json
 # map / par options (cost table 2 by default, the rule of all the cores)
 MAP_T_go ?= 2
 MAP_T_mini ?= 3   # 2 missed by 40 ps in kg_mcu2 img (26111822)
-MAP_T_minig ?= 6   # 2 / 3 missed or hung with quake_span (Ф3б, 85 % slices); 4 and 6 met (26112202)
+MAP_T_minig ?= 4   # Ф3е-б (quake_span with the perspective, 91 % slices): 4 met (26112203); 5 / 6 MAP segfault in parallel; Ф3б: 4 and 6 met
 MAP = -logic_opt off -ol high -xe n -xt 3 -register_duplication off -r 4 -global_opt off -mt 2 -detail -ir off -pr b -lc auto -power off
 PAR = -ol high -xe c -mt 4
 
