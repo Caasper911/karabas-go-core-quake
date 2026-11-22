@@ -1,0 +1,717 @@
+/* karabas: copy of PocketQuake src/firmware/quake/d_scan.c (5792fe2) with the KG_HWSPAN hooks (Ф3) */
+/*
+Copyright (C) 1996-1997 Id Software, Inc.
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  
+
+See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+// d_scan.c
+//
+// Portable C scan-level rasterization code, all pixel depths.
+
+#include "quakedef.h"
+#include "r_local.h"
+#include "d_local.h"
+#ifdef KG_HWSPAN
+#include "kg_hwspan.h"   /* karabas: the span drawer of the core (Ф3) */
+#endif
+#include "libc.h"
+#include "span_accel.h"
+
+unsigned char	*r_turb_pbase, *r_turb_pdest;
+fixed16_t		r_turb_s, r_turb_t, r_turb_sstep, r_turb_tstep;
+int				*r_turb_turb;
+int				r_turb_spancount;
+unsigned int	pq_prof_spans8_cycles_frame;
+unsigned int	pq_prof_spans8_calls_frame;
+unsigned int	pq_prof_zspans_cycles_frame;
+unsigned int	pq_prof_zspans_calls_frame;
+extern cvar_t	pq_cycleprof;
+extern cvar_t	r_hwspan;
+extern cvar_t	r_hwzspan;
+extern cvar_t	r_hwspan_queue;
+
+int		pq_combined_z_active;  /* Set by D_DrawSpans8 when HW combined z mode used */
+
+#if HW_PERSP_ACCEL
+/* DMA span descriptor buffer in SDRAM BSS.
+ * CPU writes via uncached alias (0x50xxxxxx), HW reads via AXI. */
+#define SPAN_DMA_BUF_SIZE 1024
+static unsigned int span_dma_buf[SPAN_DMA_BUF_SIZE] __attribute__((aligned(4)));
+#endif
+
+void D_DrawTurbulent8Span (void);
+
+
+/*
+=============
+D_WarpScreen
+
+// this performs a slight compression of the screen at the same time as
+// the sine warp, to keep the edges from wrapping
+=============
+*/
+void D_WarpScreen (void)
+{
+	int		w, h;
+	int		u,v;
+	byte	*dest;
+	int		*turb;
+	int		*col;
+	byte	**row;
+	byte	*rowptr[MAXHEIGHT+(AMP2*2)];
+	int		column[MAXWIDTH+(AMP2*2)];
+	float	wratio, hratio;
+
+	w = r_refdef.vrect.width;
+	h = r_refdef.vrect.height;
+
+	wratio = w / (float)scr_vrect.width;
+	hratio = h / (float)scr_vrect.height;
+
+	for (v=0 ; v<scr_vrect.height+AMP2*2 ; v++)
+	{
+		rowptr[v] = d_viewbuffer + (r_refdef.vrect.y * screenwidth) +
+				 (screenwidth * (int)((float)v * hratio * h / (h + AMP2 * 2)));
+	}
+
+	for (u=0 ; u<scr_vrect.width+AMP2*2 ; u++)
+	{
+		column[u] = r_refdef.vrect.x +
+				(int)((float)u * wratio * w / (w + AMP2 * 2));
+	}
+
+	turb = intsintable + ((int)(cl.time*SPEED)&(CYCLE-1));
+	dest = vid.buffer + scr_vrect.y * vid.rowbytes + scr_vrect.x;
+
+	for (v=0 ; v<scr_vrect.height ; v++, dest += vid.rowbytes)
+	{
+		col = &column[turb[v]];
+		row = &rowptr[v];
+
+		for (u=0 ; u<scr_vrect.width ; u+=4)
+		{
+			dest[u+0] = row[turb[u+0]][col[u+0]];
+			dest[u+1] = row[turb[u+1]][col[u+1]];
+			dest[u+2] = row[turb[u+2]][col[u+2]];
+			dest[u+3] = row[turb[u+3]][col[u+3]];
+		}
+	}
+}
+
+
+#if	!id386
+
+/*
+=============
+D_DrawTurbulent8Span
+=============
+*/
+void D_DrawTurbulent8Span (void)
+{
+	int		sturb, tturb;
+
+	do
+	{
+		sturb = ((r_turb_s + r_turb_turb[(r_turb_t>>16)&(CYCLE-1)])>>16)&63;
+		tturb = ((r_turb_t + r_turb_turb[(r_turb_s>>16)&(CYCLE-1)])>>16)&63;
+		*r_turb_pdest++ = *(r_turb_pbase + (tturb<<6) + sturb);
+		r_turb_s += r_turb_sstep;
+		r_turb_t += r_turb_tstep;
+	} while (--r_turb_spancount > 0);
+}
+
+#endif	// !id386
+
+
+/*
+=============
+Turbulent8
+=============
+*/
+void Turbulent8 (espan_t *pspan)
+{
+	int				count;
+	fixed16_t		snext, tnext;
+	float			sdivz, tdivz, zi, z, du, dv, spancountminus1;
+	float			sdivz16stepu, tdivz16stepu, zi16stepu;
+#if HW_TURB_ACCEL && HW_COMBINED_Z
+	int				izistep;
+#endif
+
+	r_turb_turb = sintable + ((int)(cl.time*SPEED)&(CYCLE-1));
+
+	r_turb_sstep = 0;	// keep compiler happy
+	r_turb_tstep = 0;	// ditto
+
+	r_turb_pbase = (unsigned char *)cacheblock;
+
+#if HW_TURB_ACCEL
+	span_set_turb_phase((int)(cl.time * SPEED));
+	SPAN_TEX_ADDR  = (unsigned int)r_turb_pbase;
+	SPAN_TEX_WIDTH = 64 | (64 << 16);
+#if HW_COMBINED_Z
+	izistep = (int)(d_zistepu * 0x8000 * 0x10000);
+	SPAN_ZISTEP = (unsigned int)izistep;
+	pq_combined_z_active = 1;
+#endif
+#endif
+
+	sdivz16stepu = d_sdivzstepu * 32;
+	tdivz16stepu = d_tdivzstepu * 32;
+	zi16stepu = d_zistepu * 32;
+
+	do
+	{
+		r_turb_pdest = (unsigned char *)((byte *)d_viewbuffer +
+				(screenwidth * pspan->v) + pspan->u);
+
+		count = pspan->count;
+
+	// calculate the initial s/z, t/z, 1/z, s, and t and clamp
+		du = (float)pspan->u;
+		dv = (float)pspan->v;
+
+		sdivz = d_sdivzorigin + dv*d_sdivzstepv + du*d_sdivzstepu;
+		tdivz = d_tdivzorigin + dv*d_tdivzstepv + du*d_tdivzstepu;
+		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+		z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+
+#if HW_TURB_ACCEL && HW_COMBINED_Z
+		int cur_izi = (int)(zi * 0x8000 * 0x10000);
+		short *pzbuf = d_pzbuffer + (d_zwidth * pspan->v) + pspan->u;
+#endif
+
+		r_turb_s = (int)(sdivz * z) + sadjust;
+		if (r_turb_s > bbextents)
+			r_turb_s = bbextents;
+		else if (r_turb_s < 0)
+			r_turb_s = 0;
+
+		r_turb_t = (int)(tdivz * z) + tadjust;
+		if (r_turb_t > bbextentt)
+			r_turb_t = bbextentt;
+		else if (r_turb_t < 0)
+			r_turb_t = 0;
+
+		do
+		{
+		// calculate s and t at the far end of the span
+			if (count >= 32)
+				r_turb_spancount = 32;
+			else
+				r_turb_spancount = count;
+
+			count -= r_turb_spancount;
+
+			if (count)
+			{
+			// calculate s/z, t/z, zi->fixed s and t at far end of span,
+			// calculate s and t steps across span by shifting
+				sdivz += sdivz16stepu;
+				tdivz += tdivz16stepu;
+				zi += zi16stepu;
+				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+
+				snext = (int)(sdivz * z) + sadjust;
+				if (snext > bbextents)
+					snext = bbextents;
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  from causing overstepping & running off the
+								//  edge of the texture
+
+				tnext = (int)(tdivz * z) + tadjust;
+				if (tnext > bbextentt)
+					tnext = bbextentt;
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
+
+				r_turb_sstep = (snext - r_turb_s) >> 5;
+				r_turb_tstep = (tnext - r_turb_t) >> 5;
+			}
+			else
+			{
+			// calculate s/z, t/z, zi->fixed s and t at last pixel in span (so
+			// can't step off polygon), clamp, calculate s and t steps across
+			// span by division, biasing steps low so we don't run off the
+			// texture
+				spancountminus1 = (float)(r_turb_spancount - 1);
+				sdivz += d_sdivzstepu * spancountminus1;
+				tdivz += d_tdivzstepu * spancountminus1;
+				zi += d_zistepu * spancountminus1;
+				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+				snext = (int)(sdivz * z) + sadjust;
+				if (snext > bbextents)
+					snext = bbextents;
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  from causing overstepping & running off the
+								//  edge of the texture
+
+				tnext = (int)(tdivz * z) + tadjust;
+				if (tnext > bbextentt)
+					tnext = bbextentt;
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
+
+				if (r_turb_spancount > 1)
+				{
+					float inv = 1.0f / (float)(r_turb_spancount - 1);
+					r_turb_sstep = (int)((float)(snext - r_turb_s) * inv);
+					r_turb_tstep = (int)((float)(tnext - r_turb_t) * inv);
+				}
+			}
+
+			r_turb_s = r_turb_s & ((CYCLE<<16)-1);
+			r_turb_t = r_turb_t & ((CYCLE<<16)-1);
+
+#if HW_TURB_ACCEL
+			while (!span_can_accept()) span_pump_audio();
+#if HW_COMBINED_Z
+			span_draw_turb_z((unsigned int)r_turb_pdest,
+			                 r_turb_s, r_turb_t,
+			                 r_turb_sstep, r_turb_tstep,
+			                 r_turb_spancount,
+			                 (unsigned int)pzbuf, cur_izi);
+			pzbuf += r_turb_spancount;
+			cur_izi += izistep * r_turb_spancount;
+#else
+			span_draw_turb((unsigned int)r_turb_pdest,
+			               r_turb_s, r_turb_t,
+			               r_turb_sstep, r_turb_tstep,
+			               r_turb_spancount);
+#endif
+			r_turb_pdest += r_turb_spancount;
+#else
+			D_DrawTurbulent8Span ();
+#endif
+
+			r_turb_s = snext;
+			r_turb_t = tnext;
+
+		} while (count > 0);
+
+	} while ((pspan = pspan->pnext) != NULL);
+
+#if HW_TURB_ACCEL
+	span_wait();
+#endif
+}
+
+
+#if	!id386
+
+/*
+=============
+D_DrawSpans8
+=============
+*/
+PQ_FASTTEXT void D_DrawSpans8 (espan_t *pspan)
+{
+	unsigned char	*pbase;
+	unsigned int	prof_start = 0;
+#if !HW_PERSP_ACCEL
+	int				count;
+	unsigned char	*pdest;
+	float			sdivz, tdivz, zi, du, dv;
+	int				spancount;
+	fixed16_t		s, t, snext, tnext, sstep, tstep;
+	float			z, spancountminus1;
+	float			sdivzNstepu, tdivzNstepu, ziNstepu;
+#endif
+
+	if (pq_cycleprof.value) {
+		prof_start = SYS_CYCLE_LO;
+		pq_prof_spans8_calls_frame++;
+	}
+
+	pbase = (unsigned char *)cacheblock;
+#ifdef KG_HWSPAN
+	kg_span_tex(pbase, cachewidth);   /* karabas: the texture (surface cache block) of the span drawer */
+#endif
+#ifdef KG_HWPERSP
+	/* karabas Ф3е: the perspective of the whole surface in the drawer; the z too (no D_DrawZSpans after it) */
+	kg_persp_surface(d_sdivzorigin, d_sdivzstepu, d_sdivzstepv, d_tdivzorigin, d_tdivzstepu, d_tdivzstepv,
+	                 d_ziorigin, d_zistepu, d_zistepv, sadjust, tadjust, bbextents, bbextentt);
+	do {
+		kg_pspan(pspan->u, pspan->v, pspan->count);
+	} while ((pspan = pspan->pnext) != NULL);
+	pq_combined_z_active = 1;
+	return;
+#endif
+
+#if HW_PERSP_ACCEL
+	// HW perspective + UV MAD + HW address gen + DMA span list:
+	// CPU builds descriptor list in SDRAM, hardware processes autonomously.
+	span_set_texture((unsigned int)pbase, cachewidth, (bbextentt >> 16) + 1);
+	span_set_framebuffer((unsigned int)d_viewbuffer, screenwidth,
+	                     (unsigned int)d_pzbuffer, d_zwidth * 2);
+	span_set_perspective_uv(d_sdivzstepu, d_tdivzstepu, d_zistepu,
+	                        d_sdivzstepv, d_tdivzstepv, d_zistepv,
+	                        d_sdivzorigin, d_tdivzorigin, d_ziorigin,
+	                        sadjust, tadjust, bbextents, bbextentt);
+
+#if HW_COMBINED_Z
+	{
+	int izistep = (int)(d_zistepu * 0x8000 * 0x10000);
+	SPAN_ZISTEP = (unsigned int)izistep;
+	pq_combined_z_active = 1;
+
+	// Set DMA control flags (sticky, applied to all descriptors)
+	SPAN_DMA_CTRL = SPAN_CTL_PERSP | SPAN_CTL_COMBZ | SPAN_CTL_UV;
+
+	// Build descriptor list via uncached SDRAM alias
+	volatile unsigned int *buf = (volatile unsigned int *)
+		((unsigned int)span_dma_buf + 0x40000000);
+	int n = 0;
+	do {
+		buf[n++] = SPAN_DESC_PACK(pspan->u, pspan->v, pspan->count);
+	} while ((pspan = pspan->pnext) != NULL);
+
+	// Kick DMA: hardware reads descriptors from physical SDRAM
+	SPAN_DMA_BASE = (unsigned int)span_dma_buf;
+	SPAN_DMA_KICK = (unsigned int)n;
+
+	// Wait for all spans to complete (service audio while waiting)
+	while (SPAN_STATUS & SPAN_STATUS_BUSY) span_pump_audio();
+	}
+#else
+	SPAN_DMA_CTRL = SPAN_CTL_PERSP | SPAN_CTL_UV;
+
+	volatile unsigned int *buf = (volatile unsigned int *)
+		((unsigned int)span_dma_buf + 0x40000000);
+	int n = 0;
+	do {
+		buf[n++] = SPAN_DESC_PACK(pspan->u, pspan->v, pspan->count);
+	} while ((pspan = pspan->pnext) != NULL);
+
+	SPAN_DMA_BASE = (unsigned int)span_dma_buf;
+	SPAN_DMA_KICK = (unsigned int)n;
+
+	while (SPAN_STATUS & SPAN_STATUS_BUSY) span_pump_audio();
+#endif
+#else /* !HW_PERSP_ACCEL */
+	sstep = 0;	// keep compiler happy
+	tstep = 0;	// ditto
+
+	sdivzNstepu = d_sdivzstepu * 16;
+	tdivzNstepu = d_tdivzstepu * 16;
+	ziNstepu = d_zistepu * 16;
+
+#if HW_SPAN_ACCEL
+	/* Texture is set per-span now (only for large spans) */
+#endif
+
+	do
+	{
+		pdest = (unsigned char *)((byte *)d_viewbuffer +
+				(screenwidth * pspan->v) + pspan->u);
+
+		count = pspan->count;
+
+#if HW_SPAN_ACCEL
+		int use_hw = r_hwspan.value;
+		if (use_hw)
+			span_set_texture((unsigned int)pbase, cachewidth, (bbextentt >> 16) + 1);
+#endif
+
+	// calculate the initial s/z, t/z, 1/z, s, and t and clamp
+		du = (float)pspan->u;
+		dv = (float)pspan->v;
+
+		sdivz = d_sdivzorigin + dv*d_sdivzstepv + du*d_sdivzstepu;
+		tdivz = d_tdivzorigin + dv*d_tdivzstepv + du*d_tdivzstepu;
+		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+		z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+
+		s = (int)(sdivz * z) + sadjust;
+		if (s > bbextents)
+			s = bbextents;
+		else if (s < 0)
+			s = 0;
+
+		t = (int)(tdivz * z) + tadjust;
+		if (t > bbextentt)
+			t = bbextentt;
+		else if (t < 0)
+			t = 0;
+
+		do
+		{
+		// calculate s and t at the far end of the span
+			if (count >= 16)
+				spancount = 16;
+			else
+				spancount = count;
+
+			count -= spancount;
+
+			if (count)
+			{
+			// calculate s/z, t/z, zi->fixed s and t at far end of span,
+			// calculate s and t steps across span by shifting
+				sdivz += sdivzNstepu;
+				tdivz += tdivzNstepu;
+				zi += ziNstepu;
+				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+
+				snext = (int)(sdivz * z) + sadjust;
+				if (snext > bbextents)
+					snext = bbextents;
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  from causing overstepping & running off the
+								//  edge of the texture
+
+				tnext = (int)(tdivz * z) + tadjust;
+				if (tnext > bbextentt)
+					tnext = bbextentt;
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
+
+				sstep = (snext - s) >> 4;
+				tstep = (tnext - t) >> 4;
+			}
+			else
+			{
+			// calculate s/z, t/z, zi->fixed s and t at last pixel in span (so
+			// can't step off polygon), clamp, calculate s and t steps across
+			// span by division, biasing steps low so we don't run off the
+			// texture
+				spancountminus1 = (float)(spancount - 1);
+				sdivz += d_sdivzstepu * spancountminus1;
+				tdivz += d_tdivzstepu * spancountminus1;
+				zi += d_zistepu * spancountminus1;
+				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+				snext = (int)(sdivz * z) + sadjust;
+				if (snext > bbextents)
+					snext = bbextents;
+				else if (snext < 8)
+					snext = 8;	// prevent round-off error on <0 steps from
+								//  from causing overstepping & running off the
+								//  edge of the texture
+
+				tnext = (int)(tdivz * z) + tadjust;
+				if (tnext > bbextentt)
+					tnext = bbextentt;
+				else if (tnext < 8)
+					tnext = 8;	// guard against round-off error on <0 steps
+
+				if (spancount > 1)
+				{
+					/* Use float reciprocal instead of integer division.
+					 * fdiv.s is ~15 cycles vs div ~35 cycles, and we
+					 * already have z in a float register. */
+#ifdef KG_QOPT
+					/* karabas Ф3д: 65536 / (spancount - 1) from a table and an integer multiply instead of
+					   fdiv + fmul + fcvt (the FPU chain is ~40 clocks on VexRiscv) */
+					static const int kg_recip[16] = { 0, 65536, 32768, 21845, 16384, 13107, 10923, 9362,
+					                                  8192, 7282, 6554, 5958, 5461, 5041, 4681, 4369 };
+					int r = kg_recip[spancount - 1];
+					sstep = (int)(((long long)(snext - s) * r) >> 16);
+					tstep = (int)(((long long)(tnext - t) * r) >> 16);
+#else
+					float inv = 1.0f / (float)(spancount - 1);
+					sstep = (int)((float)(snext - s) * inv);
+					tstep = (int)((float)(tnext - t) * inv);
+#endif
+				}
+			}
+
+
+#if HW_SPAN_ACCEL
+			if (use_hw) {
+				while (!span_can_accept())
+					span_pump_audio();
+				span_draw_tex((unsigned int)pdest, s, t, sstep, tstep, spancount);
+				if (!r_hwspan_queue.value)
+					span_wait();
+				pdest += spancount;
+			} else {
+				do
+				{
+					*pdest++ = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
+					s += sstep;
+					t += tstep;
+				} while (--spancount > 0);
+			}
+#elif defined(KG_HWSPAN)
+			/* karabas: the pixels of up to 16 by the span drawer (quake_span) */
+			kg_span(pdest, s, t, sstep, tstep, spancount);
+			pdest += spancount;
+#else
+			do
+			{
+				*pdest++ = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
+				s += sstep;
+				t += tstep;
+			} while (--spancount > 0);
+#endif
+
+			s = snext;
+			t = tnext;
+
+		} while (count > 0);
+
+	} while ((pspan = pspan->pnext) != NULL);
+
+#if HW_SPAN_ACCEL
+	if (r_hwspan.value)
+		span_wait();  // ensure last span is done
+#endif
+#endif /* HW_PERSP_ACCEL */
+
+	if (pq_cycleprof.value)
+		pq_prof_spans8_cycles_frame += (SYS_CYCLE_LO - prof_start);
+}
+
+#endif
+
+
+#if	!id386
+
+/*
+=============
+D_DrawZSpans
+=============
+*/
+PQ_FASTTEXT void D_DrawZSpans (espan_t *pspan)
+{
+	int				count, izistep;
+	int				izi;
+	short			*pdest;
+	float			zi;
+	float			du, dv;
+	unsigned int	prof_start = 0;
+	int				doublecount;
+	unsigned		ltemp;
+
+	if (pq_cycleprof.value) {
+		prof_start = SYS_CYCLE_LO;
+		pq_prof_zspans_calls_frame++;
+	}
+
+// FIXME: check for clamping/range problems
+// we count on FP exceptions being turned off to avoid range problems
+	izistep = (int)(d_zistepu * 0x8000 * 0x10000);
+#ifdef KG_QOPT
+	/* karabas Ф3д: 1/z of a span start from the first span of the surface and the integer gradients
+	   (32-bit modular arithmetic: exact whenever the result fits, as izi does), instead of a float chain
+	   per span; no float -> int64 (a libgcc call on rv32) */
+	int kg_izv = (int)(d_zistepv * 0x8000 * 0x10000);
+	int kg_iz0 = 0, kg_u0 = 0, kg_v0 = 0, kg_first = 1;
+#endif
+
+	do
+	{
+		pdest = d_pzbuffer + (d_zwidth * pspan->v) + pspan->u;
+
+		count = pspan->count;
+
+#ifdef KG_QOPT
+		if (kg_first) {
+			kg_first = 0;
+			kg_u0 = pspan->u;
+			kg_v0 = pspan->v;
+			zi = d_ziorigin + (float)kg_v0*d_zistepv + (float)kg_u0*d_zistepu;
+			kg_iz0 = (int)(zi * 0x8000 * 0x10000);
+		}
+		izi = (int)((unsigned)kg_iz0 + (unsigned)(pspan->v - kg_v0) * (unsigned)kg_izv +
+		            (unsigned)(pspan->u - kg_u0) * (unsigned)izistep);
+#else
+	// calculate the initial 1/z
+		du = (float)pspan->u;
+		dv = (float)pspan->v;
+
+		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+	// we count on FP exceptions being turned off to avoid range problems
+		izi = (int)(zi * 0x8000 * 0x10000);
+#endif
+
+#if HW_ZSPAN_ACCEL
+		if (r_hwzspan.value) {
+			if (count > 0) {
+				while (!span_can_accept())
+					span_pump_audio();
+				span_z_draw((unsigned int)pdest, izi, izistep, count);
+				if (!r_hwspan_queue.value)
+					span_wait();
+			}
+		} else {
+			if ((long)pdest & 0x02)
+			{
+				*pdest++ = (short)(izi >> 16);
+				izi += izistep;
+				count--;
+			}
+
+			if ((doublecount = count >> 1) > 0)
+			{
+				do
+				{
+					ltemp = izi >> 16;
+					izi += izistep;
+					ltemp |= izi & 0xFFFF0000;
+					izi += izistep;
+					*(int *)pdest = ltemp;
+					pdest += 2;
+				} while (--doublecount > 0);
+			}
+
+			if (count & 1)
+				*pdest = (short)(izi >> 16);
+		}
+#elif defined(KG_HWSPAN)
+		/* karabas: the z of the whole span by the span drawer (quake_span) */
+		kg_zspan(pdest, izi, izistep, count);
+#else
+		if ((long)pdest & 0x02)
+		{
+			*pdest++ = (short)(izi >> 16);
+			izi += izistep;
+			count--;
+		}
+
+		if ((doublecount = count >> 1) > 0)
+		{
+			do
+			{
+				ltemp = izi >> 16;
+				izi += izistep;
+				ltemp |= izi & 0xFFFF0000;
+				izi += izistep;
+				*(int *)pdest = ltemp;
+				pdest += 2;
+			} while (--doublecount > 0);
+		}
+
+		if (count & 1)
+			*pdest = (short)(izi >> 16);
+#endif
+
+	} while ((pspan = pspan->pnext) != NULL);
+
+#if HW_ZSPAN_ACCEL
+	if (r_hwzspan.value)
+		span_wait();  // ensure last z-span is done
+#endif
+
+	if (pq_cycleprof.value)
+		pq_prof_zspans_cycles_frame += (SYS_CYCLE_LO - prof_start);
+}
+
+#endif

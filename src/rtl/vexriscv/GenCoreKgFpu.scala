@@ -27,6 +27,7 @@ object SpinalConfig extends spinal.core.SpinalConfig(
 
 case class ArgConfig(
   fpu : Boolean = false,
+  fpuAsyncRf : Boolean = false,
   debug : Boolean = false,
   hardwareBreakpointCount : Int = 0,
   iCacheSize : Int = 4096,
@@ -76,6 +77,7 @@ object GenCoreKgFpu{
       opt[Int]("pmpRegions")    action { (v, c) => c.copy(pmpRegions = v)   } text("Number of PMP regions, 0 disables PMP")
       opt[Int]("pmpGranularity")    action { (v, c) => c.copy(pmpGranularity = v)   } text("Granularity of PMP regions (in bytes)")
       opt[String]("pmpAddressMatchingModes")    action { (v, c) => c.copy(pmpAddressMatchingModes = v)   } text("Which PMP address matching modes to support (comma-separated, out of [NA4, NAPOT, TOR])")
+      opt[Boolean]("fpuAsyncRf")    action { (v, c) => c.copy(fpuAsyncRf = v)   } text("FpuParameter asyncRegFile")
       opt[Boolean]("fpu")    action { (v, c) => c.copy(fpu = v)   } text("set RV32IMF (FpuPlugin, single)")
       opt[Boolean]("mulDiv")    action { (v, c) => c.copy(mulDiv = v)   } text("set RV32IM")
       opt[Boolean]("cfu")       action { (v, c) => c.copy(cfu = v)   } text("If true, add custom function unit interface")
@@ -313,7 +315,8 @@ object GenCoreKgFpu{
         )
       }
 
-      if (argConfig.fpu) plugins += new FpuPlugin(externalFpu = false, p = FpuParameter(withDouble = false))
+      if (argConfig.fpu) plugins += new FpuPlugin(externalFpu = false, p = FpuParameter(withDouble = false,
+        asyncRegFile = argConfig.fpuAsyncRf))
 
       // CPU configuration
       val cpuConfig = VexRiscvConfig(plugins.toList)

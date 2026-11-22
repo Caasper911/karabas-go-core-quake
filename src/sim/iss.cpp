@@ -80,6 +80,8 @@ struct Drawer {
     }
 };
 static Drawer drw;
+#include "qspan_model.h"
+static QSpan qsp;   // Quake Ф3: the span drawer (MMIO 0x100..0x13c)
 
 // Quake Ф0: RV32F (single precision; IEEE arithmetic of the host, round to nearest even except the
 // fcvt.w(u).s rounding modes; NaN results canonical 0x7fc00000; fflags not kept). As the VexRiscv
@@ -226,6 +228,7 @@ int main(int argc, char **argv) {
         if (a & 0x80000000u) {
             if ((a & 0x3fff) == 0xdc) return 0xd7000000u; // drawer: id, idle
             if ((a & 0x3fff) >= 0x1000 && (a & 0x3fff) < 0x1800) return sdbuf[((a & 0x3fff) - 0x1000) >> 2];
+            if ((a & 0x3fff) == 0x13c) return QSpan::stat();   // Quake Ф3
             if ((a & 0x3fff) >= 0x100) return 0;
             switch (a & 0xff) {
             case 0x0c: return (uint32_t)ninstr;
@@ -268,6 +271,7 @@ int main(int argc, char **argv) {
             case 0xd8: drw.cm_adr = v; return;
             case 0xdc: return;                            // the flat cache: forget it
             }
+            if (o >= 0x100 && o < 0x180 && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3 (Ф3е: 0x140..)
             if (o >= 0x2000) { ring[(o - 0x2000) >> 2] = v; return; }
             if (o >= 0x1000 && o < 0x1800) { sdbuf[(o - 0x1000) >> 2] = v & 0xff; return; }
             if (o == 0x80) { sd_sector = v; return; }
@@ -305,6 +309,15 @@ int main(int argc, char **argv) {
                        (unsigned long long)(tot.uc - last.uc), (unsigned long long)(tot.dcol - last.dcol),
                        (unsigned long long)(tot.dspan - last.dspan), (unsigned long long)(tot.dpx - last.dpx));
                 last = tot;
+                {   // Quake Ф3: "QS,<frame>,<span cmds>,<z cmds>,<pixels>,<z pixels>,<texel line fills>,<busy clocks (model)>"
+                    static QSpan ql;
+                    if (qsp.cmds + qsp.zcmds != ql.cmds + ql.zcmds)
+                        printf("QS,%u,%llu,%llu,%llu,%llu,%llu,%llu\n", v, (unsigned long long)(qsp.cmds - ql.cmds),
+                               (unsigned long long)(qsp.zcmds - ql.zcmds), (unsigned long long)(qsp.pix - ql.pix),
+                               (unsigned long long)(qsp.zpix - ql.zpix), (unsigned long long)(qsp.fills - ql.fills),
+                               (unsigned long long)(qsp.busy() - ql.busy()));
+                    ql = qsp;
+                }
                 {   // Quake Ф0: "FF,<frame>,<count of each FP kind in this frame>" (fc_name order), only with F code
                     static uint64_t flast[FC_N];
                     uint64_t any = 0;
@@ -552,6 +565,9 @@ int main(int argc, char **argv) {
     if (sd_path) { FILE *q = fopen(sd_path, "wb"); fwrite(sdf.data(), 1, sdf.size(), q); fclose(q); }
     if (midif) fclose(midif);
     tot.instr = ninstr;
+    if (qsp.pcmds) printf("QSPERSP cmds %llu segs %llu pixels %llu texel reads (halfword reuse) %llu frame writes (pairs) %llu\n",
+                          (unsigned long long)qsp.pcmds, (unsigned long long)qsp.psegs, (unsigned long long)qsp.pix,
+                          (unsigned long long)qsp.p_trd, (unsigned long long)qsp.p_pwr);
     printf("FP");
     for (int k = 0; k < FC_N; k++) printf(" %s %llu", fc_name[k], (unsigned long long)fcnt[k]);
     printf("\n");

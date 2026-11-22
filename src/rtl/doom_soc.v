@@ -49,7 +49,10 @@ module doom_soc #(
 	parameter [9:0] CLK_DEN = 10'd1,
 	parameter [31:0] RESET_VECTOR = 32'h10000000,
 	// Quake (karabas): 0 = no doom_draw (its registers read 0, STAT without the id: the firmware draws itself)
-	parameter WITH_DRAW = 1
+	parameter WITH_DRAW = 1,
+	// Quake Ф3: 1 = quake_span (MMIO 0x100..0x13c) on the drawer port of the SRAM (needs WITH_DRAW 0); the CPU
+	// waits for the SRAM at >= 0x3b0000 (z-buffer and frames) and the frame copy waits while it is busy
+	parameter WITH_QSPAN = 0
 ) (
 	input wire clk,
 	input wire reset,                     // the whole machine (PLL, the Reset item)
@@ -201,6 +204,9 @@ wire [2:0] drw_sd_cti;
 wire [20:0] drw_sr_adr;
 wire [1:0] drw_sr_sel;
 wire [15:0] drw_sr_dat;
+wire drw_sr_we;                           // Quake Ф3: 0 = a read (quake_span texels)
+wire [15:0] drw_sr_rdat;
+wire qsp_busy;
 wire sd_ack;
 wire [31:0] sd_dat;
 reg sd_cyc, sd_we;
@@ -252,7 +258,9 @@ wire [31:0] sr_dat;
 localparam [20:0] FB_WORK = 21'h1f8000, FB_DISP0 = 21'h1f0000, FB_DISP1 = 21'h1e8000;
 reg copy_pend = 1'b0, copy_run = 1'b0, dma_req = 1'b0;
 wire dma_busy;
-wire sr_ok = ~cpu_reset & ~copy_pend & ~drw_busy;
+// Quake Ф3: quake_span fences only the z-buffer and the frames (>= 0x3b0000): the CPU builds surfaces meanwhile
+wire d_fb = d_adr[19:0] >= 20'hEC000;
+wire sr_ok = ~cpu_reset & ~copy_pend & ~drw_busy & ~(qsp_busy & d_fb);
 assign copy_pend_w = copy_pend;
 assign copy_run_w = copy_run;
 assign dma_busy_w = dma_busy;
@@ -262,6 +270,7 @@ doom_sram sram (
 	.wb_cyc(d_req & d_sr & sr_ok), .wb_stb(d_req & d_sr & sr_ok), .wb_we(d_we), .wb_sel(d_sel),
 	.wb_adr(d_adr[19:0]), .wb_cti(d_cti), .wb_dat_i(d_dat_o), .wb_dat_o(sr_dat), .wb_ack(sr_ack),
 	.drw_req(drw_sr_req), .drw_adr(drw_sr_adr), .drw_sel(drw_sr_sel), .drw_dat(drw_sr_dat), .drw_ack(drw_sr_ack),
+	.drw_we(drw_sr_we), .drw_rdat(drw_sr_rdat),
 	.vid_req(vid_req), .vid_adr(vid_adr), .vid_len(vid_len), .vid_we(vid_we), .vid_wa(vid_wa),
 	.vid_wd(vid_wd), .vid_busy(vid_busy),
 	.dma_req(dma_req), .dma_src(FB_WORK), .dma_dst(disp_front ? FB_DISP0 : FB_DISP1), .dma_len(16'd32000),
@@ -289,16 +298,40 @@ wire aud_sel = io_off14[13] || io_off14[13:11] == 3'b010 ||
 assign aud_we = d_req && d_io && !io_ack && !cpu_reset && d_we && aud_sel;
 // the drawer registers c0..dc; a queueing write (cc, d0) waits while its queue is full
 wire drw_sel_io = io_low && io_off[11:8] == 4'h0 && io_off[7:5] == 3'b110;
-wire io_hold = drw_sel_io && d_we && (io_off[7:0] == 8'hcc || io_off[7:0] == 8'hd0) && drw_push_wait;
+// Quake Ф3: quake_span 0x100..0x17f (Ф3е); it says which presented write must wait (qsp_io_hold: a full queue,
+// the surface registers while it is busy)
+wire qsp_sel_io = WITH_QSPAN && io_low && io_off[11:7] == 5'b00010;
+wire qsp_present = d_req && d_io && !io_ack && !cpu_reset && d_we && qsp_sel_io;
+wire qsp_io_hold;
+wire io_hold = (drw_sel_io && d_we && (io_off[7:0] == 8'hcc || io_off[7:0] == 8'hd0) && drw_push_wait) || qsp_io_hold;
+wire qsp_we = qsp_present && !io_hold;
 wire drw_we = d_req && d_io && !io_ack && !cpu_reset && d_we && drw_sel_io && !io_hold;
-generate if (WITH_DRAW) begin : g_drw
+generate if (WITH_QSPAN) begin : g_qsp
+quake_span qsp (
+	.clk(clk), .reset(cpu_reset),
+	.io_sel(qsp_present), .io_off(io_off[6:2]), .io_wd(d_dat_o), .io_hold(qsp_io_hold), .io_we(qsp_we), .busy(qsp_busy),
+	.sr_req(drw_sr_req), .sr_we(drw_sr_we), .sr_adr(drw_sr_adr), .sr_sel(drw_sr_sel), .sr_dat(drw_sr_dat),
+	.sr_ack(drw_sr_ack), .sr_rdat(drw_sr_rdat)
+);
+assign drw_push_wait = 1'b0;
+assign drw_busy = 1'b0;
+assign drw_sd_cyc = 1'b0;
+assign drw_sd_adr = 23'd0;
+assign drw_sd_cti = 3'd0;
+end else if (WITH_DRAW) begin : g_drw
 doom_draw drw (
 	.clk(clk), .reset(cpu_reset),
 	.io_we(drw_we), .io_off(io_off[7:0]), .io_wd(d_dat_o), .push_wait(drw_push_wait), .busy(drw_busy),
 	.sd_cyc(drw_sd_cyc), .sd_adr(drw_sd_adr), .sd_cti(drw_sd_cti), .sd_ack((own == O_DR) & sd_ack), .sd_dat(sd_dat),
 	.sr_req(drw_sr_req), .sr_adr(drw_sr_adr), .sr_sel(drw_sr_sel), .sr_dat(drw_sr_dat), .sr_ack(drw_sr_ack)
 );
+assign qsp_busy = 1'b0;
+assign qsp_io_hold = 1'b0;
+assign drw_sr_we = 1'b1;
 end else begin : g_nodrw
+assign qsp_busy = 1'b0;
+assign qsp_io_hold = 1'b0;
+assign drw_sr_we = 1'b1;
 assign drw_push_wait = 1'b0;
 assign drw_busy = 1'b0;
 assign drw_sd_cyc = 1'b0;
@@ -318,7 +351,7 @@ reg ten = 1'b0;
 
 always @(posedge clk) begin
 	dma_req <= 1'b0;
-	if (copy_pend && !copy_run && !dma_busy && !dma_req && !drw_busy && disp_shown == disp_front) begin
+	if (copy_pend && !copy_run && !dma_busy && !dma_req && !drw_busy && !qsp_busy && disp_shown == disp_front) begin
 		dma_req <= 1'b1;
 		copy_run <= 1'b1;
 	end
@@ -375,6 +408,8 @@ always @(posedge clk) begin
 		if (d_we) begin
 			if (!io_low || aud_sel) begin
 				// doom_audio (aud_we)
+			end else if (qsp_sel_io) begin
+				// quake_span (qsp_we)
 			end else if (io_off[11:10] == 2'b01) begin   // 0x400..0x7fc
 				pal_we <= 1'b1;
 				pal_wa <= io_off[9:2];
@@ -390,6 +425,8 @@ always @(posedge clk) begin
 		end else if (aud_sel) begin
 			// the registers of the top (the sector buffer 0x1000.. too): not by the low byte below
 			io_dat <= aud_rd;
+		end else if (qsp_sel_io) begin
+			io_dat <= io_off[6:0] == 7'h3c ? { 8'h95, 23'd0, qsp_busy } : 32'd0;   // Quake Ф3: STAT
 		end else begin
 			case (io_off[7:0])
 				8'h0c: io_dat <= cycles;

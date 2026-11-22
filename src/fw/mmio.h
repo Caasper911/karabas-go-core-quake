@@ -48,3 +48,46 @@
 #define MMIO_DRW_STAT  MMIO_REG(0xdc)
 #define DRW_ID         0xd7u
 #define SRAM_UC        0x90000000u  /* the SRAM, uncached (bit 31: the IO range of VexRiscv) */
+
+/* Quake Ф3: the span drawer (quake_span.v; functional model in src/sim/qspan_model.h). Texture spans of the
+   surface cache (SDRAM) into the work frame FB_BASE and z spans into the z-buffer QSP_ZB (SRAM), queued.
+   TEX: the texture (the surface cache block): bit 28 = 1 SDRAM (offset 24..0) / 0 SRAM (offset 21..0); TW: its
+   row bytes (cachewidth);
+   S / T / SSTEP / TSTEP: 16.16 texel position and steps (as d_scan.c); IZI / IZISTEP: 1/z 16.16 (z = izi >> 16);
+   a write of SPAN / ZSPAN = { count - 1 (24..16, up to 512), pixel offset in the frame (15..0) } queues the
+   command with the values written before. STAT: 31..24 = QSP_ID, bit 0 busy. The CPU accesses to the SRAM wait
+   while the drawer is busy (the order of the frame); the CPU reads the z-buffer through SRAM_UC. */
+#define MMIO_QSP_TEX     MMIO_REG(0x100)
+#define MMIO_QSP_TW      MMIO_REG(0x104)
+#define MMIO_QSP_S       MMIO_REG(0x108)
+#define MMIO_QSP_T       MMIO_REG(0x10c)
+#define MMIO_QSP_SSTEP   MMIO_REG(0x110)
+#define MMIO_QSP_TSTEP   MMIO_REG(0x114)
+#define MMIO_QSP_IZI     MMIO_REG(0x118)
+#define MMIO_QSP_IZISTEP MMIO_REG(0x11c)
+#define MMIO_QSP_SPAN    MMIO_REG(0x120)
+#define MMIO_QSP_ZSPAN   MMIO_REG(0x124)
+#define MMIO_QSP_STAT    MMIO_REG(0x13c)
+#define QSP_ID           0x95u
+#define QSP_ZB           0x3b0000u   /* the z-buffer in the SRAM: 320 x 200 x 16 bit (to 0x3cf3ff) */
+
+/* Quake Ф3е: perspective in the drawer. Per surface (fixed point with a scale per quantity: S = sdivz * 2^ks,
+   T = tdivz * 2^kt, Z = zi * 2^kz, each origin + u * grad_u + v * grad_v at screen pixel u, v): SO..ZV, K =
+   { kz (23..16), kt (15..8), ks (7..0) } signed bytes, SADJ / TADJ (sadjust / tadjust), BBS / BBT (bbextents /
+   bbextentt). PSPAN = { count - 1 (25..17), v (16..9), u (8..0) } queues a span: texels and z (the z-buffer
+   QSP_ZB) as D_DrawSpans8 + D_DrawZSpans. Model: src/sim/qspan_model.h persp(). */
+#define MMIO_QSP_SO      MMIO_REG(0x140)
+#define MMIO_QSP_SU      MMIO_REG(0x144)
+#define MMIO_QSP_SV      MMIO_REG(0x148)
+#define MMIO_QSP_TO      MMIO_REG(0x14c)
+#define MMIO_QSP_TU      MMIO_REG(0x150)
+#define MMIO_QSP_TV      MMIO_REG(0x154)
+#define MMIO_QSP_ZO      MMIO_REG(0x158)
+#define MMIO_QSP_ZU      MMIO_REG(0x15c)
+#define MMIO_QSP_ZV      MMIO_REG(0x160)
+#define MMIO_QSP_K       MMIO_REG(0x164)
+#define MMIO_QSP_SADJ    MMIO_REG(0x168)
+#define MMIO_QSP_TADJ    MMIO_REG(0x16c)
+#define MMIO_QSP_BBS     MMIO_REG(0x170)
+#define MMIO_QSP_BBT     MMIO_REG(0x174)
+#define MMIO_QSP_PSPAN   MMIO_REG(0x178)

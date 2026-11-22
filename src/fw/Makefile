@@ -334,7 +334,19 @@ FLOAT   ?= soft
 QARGS   ?= +timedemo demo1
 QHWARGS ?= +_snd_mixahead 0.15
 HW      ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)
+# Ф3: HWSPAN=1 -> the span drawer (quake_span) does the texture and z spans (src/fw/quake/d_scan.c KG_HWSPAN)
+HWSPAN  ?=
+# Ф3а: SCSRAM=1 -> the surface cache in the SRAM 0x020000..0x1fffff (the drawer reads the texels there)
+SCSRAM  ?=
+# Ф3д: QOPT=1 -> KG_QOPT (shorter FPU chains: ceil by fcvt rup, the last span steps by a reciprocal table,
+# integer izi in D_DrawZSpans)
+QOPT    ?=
+# Ф3е: HWPERSP=1 -> KG_HWPERSP: the perspective of D_DrawSpans8 in the drawer (needs HWSPAN=1 SCSRAM=1)
+HWPERSP ?=
+# Ф3в: QX = extra compiler / LTO code generation flags (the -mtune / scheduling tries), QXN = its name (build dir)
+QX      ?=
+QXN     ?=
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(HWPERSP),-p)$(if $(QXN),-$(QXN))
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -350,18 +362,18 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
            printf_pocket cd_null sys_kg vid_kg snd_kg $(if $(HW),in_kg,in_null)
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
-           $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o)
-QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"')
+           $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o $(QB)/kg_qsave.o $(QB)/kg_save_fs.o $(QB)/kg_lz.o)
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
            -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types \
            -Wno-error=int-conversion -Wno-error=return-mismatch \
-           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I.
+           -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_QUAKE $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h
-QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/dataslot.h
-QOPTS   := $(QB)/opts-$(subst $(eval) ,_,$(subst +,p,$(if $(HW),$(QHWARGS),$(QARGS))))
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/kg_hwspan.h
+QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/kg_qsave.c quake/dataslot.h kg_save_fs.c kg_lz.c
+QOPTS   := $(QB)/opts-$(shell printf "%s" "$(if $(HW),$(QHWARGS),$(QARGS))" | md5sum | cut -c1-12)
 
 $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.[chS] $(QSRC)/*.h)
 	rm -rf $(QT)
@@ -380,6 +392,10 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# karabas: the save / config region of their libc in our SRAM (theirs is beyond our 32 MB SDRAM)
 	sed -i 's|^#define SAV_REGION_BASE  0x13C00000|#define SAV_REGION_BASE  0x00200000 /* karabas: SRAM */|' $(QT)/libc/file.c
 	grep -q 'SAV_REGION_BASE  0x00200000' $(QT)/libc/file.c
+	# karabas Ф3: before a surface is (re)built (D_SCAlloc / R_DrawSurface may overwrite a surface the span drawer
+	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
+	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
+	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
 	cp $(QOVER) $(QT)/quake/
 	cp $(QOVERT) $(QT)/
 	touch $@
@@ -398,13 +414,13 @@ $(QB)/crt0_q.o: quake/crt0_q.S
 	$(CROSS)gcc $(QMARCH) $(if $(HW),-DKG_HW) -c $< -o $@
 quake: $(QB)/quake.bin
 $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
-	$(CROSS)gcc $(QMARCH) -O3 -flto -nostdlib -nostartfiles -T quake/link_q.ld -Wl,--gc-sections \
+	$(CROSS)gcc $(QMARCH) -O3 -flto $(QX) -nostdlib -nostartfiles -T quake/link_q.ld -Wl,--gc-sections \
 	  -Wl,-Map,$(QB)/quake.map -o $@ $(QB)/crt0_q.o $(QOBJ) -lgcc
 	$(CROSS)size $@
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
 quake-hw:
-	$(MAKE) quake FLOAT=f HW=1
+	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM) QOPT=$(QOPT) HWPERSP=$(HWPERSP)
 
 clean:
 	rm -rf build-*

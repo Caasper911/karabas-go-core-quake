@@ -21,6 +21,9 @@ extern void term_puts(const char *s);
 #ifdef KG_HW
 void kg_exit_screen(int code);           /* kg_qhw.c */
 void kg_wait_pak(void);
+void kg_qsave_boot(void);                /* kg_qsave.c: config.cfg / s<n>.sav from the save file */
+const unsigned char *kg_sav_file(const char *path, int *len);
+void Host_WriteConfiguration(void);
 #endif
 
 /*
@@ -40,7 +43,8 @@ typedef struct {
 
 static syshandle_t sys_handles[MAX_HANDLES];
 
-/* the pak of a path: id1/pak0.pak -> the one in memory; anything else: not here */
+/* the pak of a path: id1/pak0.pak -> the one in memory; the board (Ф2): config.cfg / s<n>.sav of the save
+   slots (kg_qsave.c); anything else: not here */
 static const unsigned char *pak_of(const char *path, int *len)
 {
     int n = strlen(path);
@@ -49,7 +53,11 @@ static const unsigned char *pak_of(const char *path, int *len)
         *len = (int)MMIO_WADSIZE;
         if (*len > 12) return (const unsigned char *)WAD_BASE;
     }
+#ifdef KG_HW
+    return kg_sav_file(path, len);
+#else
     return NULL;
+#endif
 }
 
 int filelength(FILE *f)
@@ -184,6 +192,7 @@ void Sys_Printf(char *fmt, ...)
 void Sys_Quit(void)
 {
 #ifdef KG_HW
+    Host_WriteConfiguration();           /* Ф2: the config into the save file (PocketQuake skipped Host_Shutdown) */
     kg_exit_screen(0);
 #endif
     MMIO_EXIT = 0;
@@ -244,6 +253,7 @@ int main(void)
 
 #ifdef KG_HW
     kg_wait_pak();
+    kg_qsave_boot();
 #endif
     parms.basedir = ".";
     parms.cachedir = NULL;

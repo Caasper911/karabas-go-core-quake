@@ -15,8 +15,12 @@
 #define BASEHEIGHT  200
 #define SURFCACHE_SIZE (2 * 1024 * 1024)
 
+#ifndef KG_SCSRAM
 static byte surfcache_storage[SURFCACHE_SIZE] __attribute__((aligned(32)));
+#endif
+#ifndef KG_HWSPAN
 static short zbuffer_storage[BASEWIDTH * BASEHEIGHT] __attribute__((aligned(32)));
+#endif
 unsigned short d_8to16table[256];
 unsigned d_8to24table[256];
 static unsigned int vid_frame;
@@ -48,8 +52,16 @@ void VID_Init(unsigned char *palette)
     vid.fullbright = 256 - LittleLong(*((int *)vid.colormap + 2048));
     vid.buffer = vid.conbuffer = (pixel_t *)FB_BASE;
     vid.rowbytes = vid.conrowbytes = BASEWIDTH;
+#ifdef KG_HWSPAN
+    d_pzbuffer = (short *)(SRAM_UC + QSP_ZB);   /* Ф3: the span drawer writes it; the CPU reads it uncached */
+#else
     d_pzbuffer = zbuffer_storage;
+#endif
+#ifdef KG_SCSRAM
+    D_InitCaches((byte *)0x00020000, 0x1e0000);   /* Ф3: the surface cache in the SRAM (the span drawer reads its texels there) */
+#else
     D_InitCaches(surfcache_storage, SURFCACHE_SIZE);
+#endif
     VID_SetPalette(palette);
 }
 
