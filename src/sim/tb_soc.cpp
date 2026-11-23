@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
     uint64_t max_cycles = 2000ull * 1000 * 1000;
     double mhz = 79.545;          // Quake Ф0: the clock for US / SFX_POS
     bool qsp_hold = false;        // Quake Ф3е-б: the surface registers wait for an idle drawer
-    size_t qpolys = 2;            // Ф7 (--qpolys N): polygons queued at most (their vertices / surfaces buffered)
+    size_t qpolys = 16;           // Ф7 (--qpolys N): polygons queued at most (their vertices / surfaces buffered)
     bool qframe_async = false;    // Ф7 (--qframe-async): the FRAME write does not wait for the drawer (queued flip)
     int raw_at = -1; const char *raw_path = 0;   // --raw N file: the SRAM 0x3b0000..0x3fffff after the N-th frame write
     uint64_t n_pq = 0;            // Quake Ф0: accesses to the PocketQuake debug VRAM / sysreg
@@ -229,20 +229,20 @@ int main(int argc, char **argv) {
                             fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true;
                         }
                         else if (o >= 0x400 && o < 0x800) pal[(o - 0x400) >> 2] = v;
-                        else if (o >= 0x100 && o < 0x194) {   // Quake Ф3: the drawer (Ф3е: 0x140.., Ф7: 0x180..)
+                        else if (o >= 0x100 && o < 0x18c) {   // Quake Ф3: the drawer (Ф3е: 0x140.., Ф7: 0x180..)
                             qs.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1);
                             if (o == 0x120) qq.push_back({false, (int)((v >> 16) & 0x1ff) + 1, qs.miss});
                             if (o == 0x124) qq.push_back({true, (int)((v >> 16) & 0x1ff) + 1, {}});
                             if (o == 0x178) { QCmd q{false, (int)((v >> 17) & 0x1ff) + 1, qs.miss}; q.pz = true; qq.push_back(q); }
                             if (o == 0x184 && !qs.ops.empty()) { QCmd q{false, 0, {}}; q.ops = qs.ops; qq.push_back(q); }
-                            if (o == 0x188) { QCmd q{false, 0, {}}; q.ops.push_back({0, (uint16_t)QSpan::QP_CLR}); qq.push_back(q); }
+                            if (o == 0x188) { QCmd q{false, 0, {}}; q.ops = qs.ops; qq.push_back(q); }
                         }
                         else if (o == 0x08) { exit_code = (int)v; done = true; }
                     } else {
                         // Quake Ф0: US / SFX_POS at --mhz (Sys_FloatTime, the sound DMA position)
                         uint64_t us = (uint64_t)(cyc / mhz);
                         top->dBusWishbone_DAT_MISO = o == 0x0c ? (uint32_t)cyc : o == 0x1c ? (uint32_t)(cyc / 50000) : o == 0x20 ? wad_size :
-                                                     o == 0x13c ? (QSpan::stat() | (qbusy ? 1u : 0u)) : o == 0x190 ? qs.mdata() :
+                                                     o == 0x13c ? (QSpan::stat() | (qbusy ? 1u : 0u)) :
                                                      o == 0x40 ? (uint32_t)us : o == 0x70 ? (uint32_t)(us * 11025 / 1000000) & 2047 : 0;
                     }
                 } else if (dp.reg == -2) {

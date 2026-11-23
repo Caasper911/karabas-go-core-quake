@@ -98,9 +98,8 @@
    (bmodels): where its z >= the stored one. Model: src/sim/qspan_model.h poly(). */
 #define MMIO_QSP_PVTX    MMIO_REG(0x180)
 #define MMIO_QSP_PDRAW   MMIO_REG(0x184)
-/* Ф7: the coverage mask of the rasterizer (BRAM, a bit per pixel drawn since ZCLR; ZSPAN marks its pixels too):
-   ZCLR clears it (the frame start), MADDR = word index, MDATA reads the word (bit k of word i = pixel 32 i + k)
-   and steps MADDR. */
+/* Ф7: the coverage mask of the rasterizer in the SRAM at QSP_MASK (a bit per pixel drawn since ZCLR, bit k of
+   byte i = pixel 8 i + k; ZSPAN marks its pixels too; the end of the surface cache): ZCLR clears it (the frame
+   start); the CPU reads it through SRAM_UC when the drawer is idle. */
 #define MMIO_QSP_ZCLR    MMIO_REG(0x188)
-#define MMIO_QSP_MADDR   MMIO_REG(0x18c)
-#define MMIO_QSP_MDATA   MMIO_REG(0x190)
+#define QSP_MASK         0x1fe000u

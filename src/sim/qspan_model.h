@@ -43,10 +43,10 @@ struct QSpan {
     // ceil(vmin) .. ceil(vmax) - 1, per row the pixels ceil(xl) .. ceil(xr) - 1 (x of the two edges that cross
     // the row: closed form = a DDA in 2^-16 pixels, see poly()), each pixel as a PSPAN one but z tested:
     // drawn (texel, frame, z) only when PDRAW bit 0 = 0 (the world: it comes front to back from the BSP, so no compare,
-    // which the 16-bit z, coarse far away, would get wrong): the pixel is not covered yet (cov: a mask of the
-    // pixels drawn since ZCLR, in BRAM; ZSPAN marks its pixels too); bit 0 = 1 (bmodels, after the world): its z
-    // halfword >= the stored one (signed, as d_polyse.c). ZCLR (0x188) clears the mask, MADDR (0x18c) / MDATA
-    // (0x190 read, the address + 1) read it by 32-bit words (bit k of word i = pixel 32 i + k).
+    // which the 16-bit z, coarse far away, would get wrong): the pixel is not covered yet (the coverage mask: a bit per
+    // pixel drawn since ZCLR, in the SRAM at MASK, read / written by halfwords of 16 pixels; ZSPAN marks its pixels
+    // too); bit 0 = 1 (bmodels, after the world): its z halfword >= the stored one (signed, as d_polyse.c).
+    // ZCLR (0x188) clears the mask.
     // ops: the memory accesses / arithmetic clocks of the last PDRAW for the tb_soc timing.
     static const int QP_MAXV = 64;
     struct Op { uint8_t mem; uint16_t cyc; };   // mem 1: an SRAM access of cyc clocks, 0: cyc clocks of arithmetic
@@ -54,9 +54,10 @@ struct QSpan {
     int pvn = 0;
     std::vector<Op> ops;
     uint64_t polys = 0, prows = 0, ptest = 0, ppass = 0, pops_clk = 0;
-    static const int QP_ROW = 2, QP_VTX = 4, QP_EDGE = 36, QP_POLY = 8, QP_CLR = 2000;
-    uint32_t cov[2000] = {0};   // the coverage mask: bit = pixel (320 x 200) drawn since ZCLR
-    uint32_t maddr = 0;
+    static const int QP_ROW = 2, QP_VTX = 4, QP_EDGE = 36, QP_POLY = 8;
+    static const uint32_t MASK = 0x1fe000u;   // the coverage mask in the SRAM: bit = pixel (320 x 200), 8000 bytes
+    static bool mbit(const uint8_t *sram, uint32_t o) { return (sram[MASK + (o >> 3)] >> (o & 7)) & 1; }
+    static void mset(uint8_t *sram, uint32_t o) { sram[MASK + (o >> 3)] |= (uint8_t)(1u << (o & 7)); }
     QSpan() { for (auto &g : tag) g = 0xffffffffu; }
     bool tex_sdram() const { return (tex >> 28) & 1; }
     uint64_t busy() const { return pix * QS_PIX + zpix * QS_ZPIX + fills * QS_FILL + srd * QS_SRD; }
@@ -113,13 +114,15 @@ struct QSpan {
         case 0x178: persp(v, sram); return true;
         case 0x180: if (pvn < QP_MAXV) { pvu[pvn] = (int16_t)(v & 0xffff); pvv[pvn] = (int16_t)(v >> 16); pvn++; } return true;
         case 0x184: poly(sram, v & 1); pvn = 0; return true;
-        case 0x188: for (auto &w : cov) w = 0; return true;   // ZCLR: the coverage mask (tb_soc: QP_CLR clocks)
-        case 0x18c: maddr = v % 2000; return true;
+        case 0x188:                                           // ZCLR: the coverage mask, 4000 halfword writes
+            memset(&sram[MASK], 0, 8000);
+            ops.assign(4000, Op{1, (uint16_t)QS_ZPIX});
+            return true;
         case 0x124: {
             uint32_t off = v & 0xffff, n = ((v >> 16) & 0x1ff) + 1, z = izi;
             zcmds++;
             for (uint32_t i = 0; i < n; i++, off++) {
-                if (off < 64000) { uint16_t h = (uint16_t)(z >> 16); memcpy(&sram[ZB + 2 * off], &h, 2); cov[off >> 5] |= 1u << (off & 31); }
+                if (off < 64000) { uint16_t h = (uint16_t)(z >> 16); memcpy(&sram[ZB + 2 * off], &h, 2); mset(sram, off); }
                 z += izistep;
                 zpix++;
             }
@@ -129,7 +132,6 @@ struct QSpan {
         return false;
     }
     static uint32_t stat() { return 0x95000000u; }   // QSP_ID, never busy (the model runs at once)
-    uint32_t mdata() { uint32_t w = cov[maddr]; maddr = (maddr + 1) % 2000; return w; }   // 0x190 read
 
     // s (or t) of a point: (S * r) >> (k - kz + 8 + e), with Z = m * 2^(e - 23), m in [2^23, 2^24), r = 2^47 / m;
     // saturated to int32 (s = sdivz * 65536 / zi as d_scan.c; a Z <= 0 gives the biggest value)
@@ -216,7 +218,8 @@ struct QSpan {
     void persp_span(int u0, int v0, int count, uint8_t *sram, int zt) {
         static const int recip[16] = { 0, 65536, 32768, 21845, 16384, 13107, 10923, 9362,
                                        8192, 7282, 6554, 5958, 5461, 5041, 4681, 4369 };
-        bool prev_drawn = false;
+        bool prev_drawn = false, mdirty = false;
+        int mh = -1;                  // Ф7: the mask halfword held (16 pixels), written back when it changed
         int32_t S = (int32_t)((uint32_t)so + (uint32_t)u0 * (uint32_t)su + (uint32_t)v0 * (uint32_t)sv);
         int32_t T = (int32_t)((uint32_t)to_ + (uint32_t)u0 * (uint32_t)tu + (uint32_t)v0 * (uint32_t)tv);
         int32_t Z = (int32_t)((uint32_t)zo + (uint32_t)u0 * (uint32_t)zu + (uint32_t)v0 * (uint32_t)zv);
@@ -260,8 +263,13 @@ struct QSpan {
                     uint32_t o = off < 64000 ? off : 0;
                     bool hide;
                     ptest++;
-                    if (zt == 1) {                                   // the world: the coverage mask (BRAM, 1 clock)
-                        hide = (cov[o >> 5] >> (o & 31)) & 1;
+                    if (zt == 1) {                                   // the world: the coverage mask, a halfword per 16 pixels
+                        if ((int)(o >> 4) != mh) {
+                            if (mdirty) ops.push_back({1, (uint16_t)QS_ZPIX});
+                            ops.push_back({1, (uint16_t)QS_SRD});
+                            mh = (int)(o >> 4); mdirty = false;
+                        }
+                        hide = mbit(sram, o);
                         ops.push_back({0, 1});
                     } else {                                         // bmodels: the z-buffer
                         int16_t old;
@@ -276,7 +284,8 @@ struct QSpan {
                         continue;
                     }
                     ppass++;
-                    cov[o >> 5] |= 1u << (o & 31);
+                    mset(sram, o);
+                    mdirty = true;
                     if ((a >> 1) != last_ta) ops.push_back({1, (uint16_t)QS_SRD});
                     if (!(off & 1) || !prev_drawn) ops.push_back({1, (uint16_t)QS_PIX});
                     ops.push_back({1, (uint16_t)QS_ZPIX});
@@ -294,5 +303,6 @@ struct QSpan {
             }
             s = snext; t = tnext;
         }
+        if (mdirty) ops.push_back({1, (uint16_t)QS_ZPIX});
     }
 };

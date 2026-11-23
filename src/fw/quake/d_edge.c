@@ -379,13 +379,14 @@ draws a world pixel only where nothing is drawn yet (the world comes front to ba
 which the 16-bit z, coarse far away, gets wrong) and z-tests the bmodels; the coverage mask of the rasterizer is cleared
 per frame (kg_poly_begin).
 Sky and water: the same rows / pixels in software (kg_poly_spans, as src/sim/qspan_model.h poly()), the pixels
-the rasterizer would not draw dropped, then D_DrawSkyScans8 / Turbulent8 and their z by the drawer.
+the rasterizer would not draw dropped (the coverage mask in the SRAM, QSP_MASK), then D_DrawSkyScans8 / Turbulent8 and their z by the drawer.
 ==============
 */
 #include "kg_hwspan.h"
 extern void kg_span_idle (void);
 
 #define KG_PMAXV 64			/* the vertex buffer of the rasterizer */
+static int kg_tframe = -1;		/* transformed_modelorg is of the world in this frame */
 #define KG_MAXSPANS 1024
 
 static espan_t kg_spans[KG_MAXSPANS], kg_vspans[KG_MAXSPANS];
@@ -456,57 +457,141 @@ static int kg_poly_spans (const int *pu, const int *pv, int n)
 
 /* the parts of the spans the rasterizer would draw (ztest 0: not covered yet (the mask), 1: z >= stored),
    linked; NULL if none */
+static int		kg_nv;
+static espan_t	**kg_vlink;
+
+static void kg_vis_add (int u, int v, int count)
+{
+	espan_t *o;
+	if (count <= 0 || kg_nv >= KG_MAXSPANS)
+		return;
+	o = &kg_vspans[kg_nv++];
+	o->u = u;
+	o->v = v;
+	o->count = count;
+	*kg_vlink = o;
+	kg_vlink = &o->pnext;
+}
+
 static espan_t *kg_visible_spans (int ns, int ztest)
 {
-	int i, nv = 0;
+	int i;
 	int izistep = (int)(d_zistepu * 0x8000 * 0x10000);
-	espan_t *head = NULL, **link = &head;
+	espan_t *head = NULL;
 
+	kg_nv = 0;
+	kg_vlink = &head;
 	kg_span_idle ();			/* the z-buffer / mask are the drawer's until it is idle */
 	for (i = 0 ; i < ns ; i++)
 	{
 		espan_t *sp = &kg_spans[i];
-		float zi = d_ziorigin + (float)sp->v * d_zistepv + (float)sp->u * d_zistepu;
-		int izi = (int)(zi * 0x8000 * 0x10000), u, run = -1;
-		short *pz = d_pzbuffer + d_zwidth * sp->v;
-		unsigned off = sp->v * 320 + sp->u, w = 0;
-
-		if (!ztest)
+		if (ztest)
 		{
-			MMIO_QSP_MADDR = off >> 5;
-			w = MMIO_QSP_MDATA >> (off & 31);
-		}
-		for (u = sp->u ; u <= sp->u + sp->count ; u++, izi += izistep, off++)
-		{
-			int vis;
-			if (ztest)
-				vis = u < sp->u + sp->count && (short)(izi >> 16) >= pz[u];
-			else
+			float zi = d_ziorigin + (float)sp->v * d_zistepv + (float)sp->u * d_zistepu;
+			int izi = (int)(zi * 0x8000 * 0x10000), u, run = -1;
+			short *pz = d_pzbuffer + d_zwidth * sp->v;
+			for (u = sp->u ; u <= sp->u + sp->count ; u++, izi += izistep)
 			{
-				if (!(off & 31) && u < sp->u + sp->count)
-					w = MMIO_QSP_MDATA;
-				vis = u < sp->u + sp->count && !(w & 1);
-				w >>= 1;
-			}
-			if (vis && run < 0)
-				run = u;
-			else if (!vis && run >= 0)
-			{
-				if (nv < KG_MAXSPANS)
+				int vis = u < sp->u + sp->count && (short)(izi >> 16) >= pz[u];
+				if (vis && run < 0)
+					run = u;
+				else if (!vis && run >= 0)
 				{
-					espan_t *o = &kg_vspans[nv++];
-					o->u = run;
-					o->v = sp->v;
-					o->count = u - run;
-					*link = o;
-					link = &o->pnext;
+					kg_vis_add (run, sp->v, u - run);
+					run = -1;
 				}
-				run = -1;
 			}
+		}
+		else
+		{
+			/* the mask by words: the runs of the not covered bits */
+			unsigned row = sp->v * 320, off = row + sp->u, end = off + sp->count;
+			unsigned wi = off >> 5, we = (end - 1) >> 5, rs = 0, re = 0;
+			const volatile unsigned *pm = (const volatile unsigned *)(SRAM_UC + QSP_MASK);
+			for ( ; wi <= we ; wi++)
+			{
+				unsigned m = ~pm[wi], base = wi << 5;
+				if (wi == off >> 5)
+					m &= ~0u << (off & 31);
+				if (wi == we && (end & 31))
+					m &= (1u << (end & 31)) - 1;
+				while (m)
+				{
+					int s0 = __builtin_ctz (m);
+					unsigned rest = ~(m >> s0);
+					int len = rest ? __builtin_ctz (rest) : 32 - s0;
+					unsigned a0 = base + s0;
+					if (re == a0 && re)
+						re = a0 + len;
+					else
+					{
+						if (re)
+							kg_vis_add (rs - row, sp->v, re - rs);
+						rs = a0;
+						re = a0 + len;
+					}
+					m = s0 + len >= 32 ? 0 : m & (~0u << (s0 + len));
+				}
+			}
+			if (re)
+				kg_vis_add (rs - row, sp->v, re - rs);
 		}
 	}
-	*link = NULL;
+	*kg_vlink = NULL;
 	return head;
+}
+
+/* the per-frame caches of the world faces (r_framecount): the 1/z gradients of a plane and the s / t gradients
+   of a texinfo at a mip level as the fixed point of the drawer (D_CalcGradients + kg_persp_surface, shared by
+   the faces of a plane / texinfo); sadjust = (int)((float)(sa - (texturemins << 16 >> mip)) + sc) as there */
+#define KG_ZGMAX	16384
+#define KG_TGMAX	2048
+typedef struct { int frame, zo, zu, zv, kz; } kg_zgrad_t;
+typedef struct { int frame, so, su, sv, to, tu, tv, kst, sa, ta; float sc, tc; } kg_tgrad_t;
+static kg_zgrad_t	kg_zg[KG_ZGMAX];
+static kg_tgrad_t	kg_tg[KG_TGMAX][4];
+
+static void kg_zgrad (kg_zgrad_t *g)
+{
+	int kz = kg_pscale (d_ziorigin, d_zistepu, d_zistepv);
+	g->zo = kg_pfix (d_ziorigin, kz);
+	g->zu = kg_pfix (d_zistepu, kz);
+	g->zv = kg_pfix (d_zistepv, kz);
+	g->kz = kz;
+}
+
+static void kg_tgrad (kg_tgrad_t *g, msurface_t *pface)
+{
+	float mipscale = 1.0f / (float)(1 << miplevel), t;
+	vec3_t p_saxis, p_taxis, p_temp1;
+	float so, su, sv, to, tu, tv;
+	int ks, kt;
+
+	TransformVector (pface->texinfo->vecs[0], p_saxis);
+	TransformVector (pface->texinfo->vecs[1], p_taxis);
+	t = xscaleinv * mipscale;
+	su = p_saxis[0] * t;
+	tu = p_taxis[0] * t;
+	t = yscaleinv * mipscale;
+	sv = -p_saxis[1] * t;
+	tv = -p_taxis[1] * t;
+	so = p_saxis[2] * mipscale - xcenter * su - ycenter * sv;
+	to = p_taxis[2] * mipscale - xcenter * tu - ycenter * tv;
+	ks = kg_pscale (so, su, sv);
+	kt = kg_pscale (to, tu, tv);
+	g->so = kg_pfix (so, ks);
+	g->su = kg_pfix (su, ks);
+	g->sv = kg_pfix (sv, ks);
+	g->to = kg_pfix (to, kt);
+	g->tu = kg_pfix (tu, kt);
+	g->tv = kg_pfix (tv, kt);
+	g->kst = ((kt & 255) << 8) | (ks & 255);
+	VectorScale (transformed_modelorg, mipscale, p_temp1);
+	g->sa = (fixed16_t)(DotProduct (p_temp1, p_saxis) * 0x10000 + 0.5f);
+	g->ta = (fixed16_t)(DotProduct (p_temp1, p_taxis) * 0x10000 + 0.5f);
+	t = 0x10000 * mipscale;
+	g->sc = pface->texinfo->vecs[0][3] * t;
+	g->tc = pface->texinfo->vecs[1][3] * t;
 }
 
 void D_DrawPoly (void)
@@ -520,6 +605,57 @@ void D_DrawPoly (void)
 
 	if (n < 3)
 		return;
+
+	/* the world: the gradients from the caches of the frame */
+	if (currententity == &cl_entities[0] && !(pface->flags & (SURF_DRAWSKY | SURF_DRAWTURB)))
+	{
+		int pi = pplane - cl.worldmodel->planes, ti = pface->texinfo - cl.worldmodel->texinfo;
+		if (pi < KG_ZGMAX && ti < KG_TGMAX)
+		{
+			kg_zgrad_t *zg = &kg_zg[pi];
+			kg_tgrad_t *tg;
+			surfcache_t *pcurrentcache;
+			int sadj, tadj;
+
+			if (kg_tframe != r_framecount)
+			{
+				TransformVector (modelorg, transformed_modelorg);
+				kg_tframe = r_framecount;
+			}
+			if (zg->frame != r_framecount)
+			{
+				TransformVector (pplane->normal, p_normal);
+				distinv = 1.0f / (pplane->dist - DotProduct (modelorg, pplane->normal));
+				d_zistepu = p_normal[0] * xscaleinv * distinv;
+				d_zistepv = -p_normal[1] * yscaleinv * distinv;
+				d_ziorigin = p_normal[2] * distinv - xcenter * d_zistepu - ycenter * d_zistepv;
+				kg_zgrad (zg);
+				zg->frame = r_framecount;
+			}
+			miplevel = D_MipLevelForScale (r_polydesc.nearzi * scale_for_mip * pface->texinfo->mipadjust);
+			tg = &kg_tg[ti][miplevel];
+			if (tg->frame != r_framecount)
+			{
+				kg_tgrad (tg, pface);
+				tg->frame = r_framecount;
+			}
+			pcurrentcache = D_CacheSurface (pface, miplevel);
+			cacheblock = (pixel_t *)pcurrentcache->data;
+			cachewidth = pcurrentcache->width;
+			sadj = (int)((float)(tg->sa - ((pface->texturemins[0] << 16) >> miplevel)) + tg->sc);
+			tadj = (int)((float)(tg->ta - ((pface->texturemins[1] << 16) >> miplevel)) + tg->tc);
+			kg_span_tex ((unsigned char *)cacheblock, cachewidth);
+			kg_persp_regs (tg->so, tg->su, tg->sv, tg->to, tg->tu, tg->tv, zg->zo, zg->zu, zg->zv,
+			               ((zg->kz & 255) << 16) | tg->kst, sadj, tadj,
+			               ((pface->extents[0] << 16) >> miplevel) - 1, ((pface->extents[1] << 16) >> miplevel) - 1);
+			for (i = 0 ; i < n ; i++)
+				kg_poly_vtx (pu[i], pvv[i]);
+			kg_poly_draw (0);
+			r_drawnpolycount++;
+			return;
+		}
+	}
+	kg_tframe = -1;		/* transformed_modelorg of a bmodel below */
 
 	/* 1/z over the screen as R_RenderFace / R_RenderBmodelFace (modelorg: of the entity, rotated) */
 	TransformVector (pplane->normal, p_normal);

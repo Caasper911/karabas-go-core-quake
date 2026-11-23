@@ -58,7 +58,11 @@ void VID_Init(unsigned char *palette)
     d_pzbuffer = zbuffer_storage;
 #endif
 #ifdef KG_SCSRAM
+#ifdef KG_POLY
+    D_InitCaches((byte *)0x00020000, QSP_MASK - 0x20000);   /* Ф7: the coverage mask of the rasterizer after it */
+#else
     D_InitCaches((byte *)0x00020000, 0x1e0000);   /* Ф3: the surface cache in the SRAM (the span drawer reads its texels there) */
+#endif
 #else
     D_InitCaches(surfcache_storage, SURFCACHE_SIZE);
 #endif

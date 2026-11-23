@@ -706,6 +706,23 @@ typedef struct { int frame; int uv; float zi; int in; } kg_vproj_t;	/* in: insid
 static kg_vproj_t	kg_vproj[KG_VCACHE];
 typedef struct { float p[3]; int vi; } kg_cvert_t;
 
+/* the first vertex of each surfedge (shared by the world and its bmodels), made when the world model changes:
+   a face reads its vertex indices in a row instead of surfedge -> edge -> vertex */
+#define KG_FVIMAX	131072
+static int		kg_fvi[KG_FVIMAX];
+static model_t	*kg_fvimodel;
+
+static void kg_fvi_make (model_t *m)
+{
+	int i, n = m->numsurfedges < KG_FVIMAX ? m->numsurfedges : KG_FVIMAX;
+	for (i = 0 ; i < n ; i++)
+	{
+		int lindex = m->surfedges[i];
+		kg_fvi[i] = lindex > 0 ? m->edges[lindex].v[0] : m->edges[-lindex].v[1];
+	}
+	kg_fvimodel = m;
+}
+
 static vec3_t	kg_ru, kg_rv, kg_rz;		/* vright * xscale, -vup * yscale, vpn */
 static float	kg_cu, kg_cv, kg_cz;		/* -modelorg . r* */
 static int		kg_rframe = -1;
@@ -792,11 +809,20 @@ void R_RenderPoly (msurface_t *fa, int clipflags)
 		kg_rent = currententity;
 	}
 
-	for (i = 0 ; i < n ; i++)
+	if (kg_fvimodel != cl.worldmodel)
+		kg_fvi_make (cl.worldmodel);
+	if (currententity->model->surfedges == cl.worldmodel->surfedges && fa->firstedge + n <= KG_FVIMAX)
 	{
-		int lindex = psurfedges[i];
-		cur[i].vi = lindex > 0 ? pedges[lindex].v[0] : pedges[-lindex].v[1];
+		const int *pf = kg_fvi + fa->firstedge;
+		for (i = 0 ; i < n ; i++)
+			cur[i].vi = pf[i];
 	}
+	else
+		for (i = 0 ; i < n ; i++)
+		{
+			int lindex = psurfedges[i];
+			cur[i].vi = lindex > 0 ? pedges[lindex].v[0] : pedges[-lindex].v[1];
+		}
 
 	/* the world: the projections of the frame first; all inside the frustum -> no clipping */
 	if (world)
