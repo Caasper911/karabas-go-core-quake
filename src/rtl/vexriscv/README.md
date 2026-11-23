@@ -26,3 +26,11 @@ option `--fpu`; copy it to `pythondata_cpu_vexriscv/verilog/src/main/scala/vexri
 The top module (`VexRiscv`) has the same ports as `VexRiscv.v`. XST alone (`src/measure/xst_cpu.sh`,
 xc6slx25-2): rv32im 2235 LUT / 1385 FF / 34 RAMB16 + 4 RAMB8 / 4 DSP / 106 MHz; with the FPU 5141 / 3459 /
 34 + 7 / 8 / 100.5 MHz.
+
+Quake Ф6 (2026-11-23): `GenCoreKgFpu.scala` has `--iCacheWays` / `--dCacheWays` (default 1). The cache size must be a
+power of two (DBusCachedPlugin asserts `isPow2(cacheSize)`: no 48K), lines per way a power of two too.
+`VexRiscv_FPU.v` is now the 2-way variant:
+
+    sbt -batch "runMain vexriscv.kg.GenCoreKgFpu --iCacheSize 32768 --dCacheSize 32768 --fpu true --iCacheWays 2 --dCacheWays 2 --outputFile VexRiscv_FPU_i2d2"
+
+XST alone: 5250 LUT / 3491 FF / 36 RAMB16 + 5 RAMB8 / 8 DSP / 98.3 MHz (1-way: 5141 / 3459 / 34 + 7 / 8 / 100.5).
