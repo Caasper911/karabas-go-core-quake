@@ -85,6 +85,14 @@ void kg_fps_overlay(uint8_t *fb)
     int x0 = 320 - 2 * 8 - 3, y0 = 1, y, i;
     n++;
     if (now - t0 >= 1000) { fps = (int)((n * 1000 + (now - t0) / 2) / (now - t0)); n = 0; t0 = now; }
+#ifdef KG_POLYDIAG
+    {   /* karabas Ф7: the diagnostics line of d_edge.c (hex) */
+        extern char kg_diag_str[];
+        int k;
+        for (y = 11; y < 21; y++) memset(fb + y * 320, 0, 22 * 8 + 2);
+        for (k = 0; kg_diag_str[k]; k++) draw_char(fb, 1 + 8 * k, 12, kg_diag_str[k], 15);
+    }
+#endif
     if ((MMIO_SW & 0xff) != 1) return;
     s[0] = fps > 99 ? '9' : '0' + fps / 10 % 10;
     s[1] = fps > 99 ? '9' : '0' + fps % 10;

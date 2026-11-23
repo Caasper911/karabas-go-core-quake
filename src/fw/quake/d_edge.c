@@ -394,8 +394,55 @@ static espan_t kg_spans[KG_MAXSPANS], kg_vspans[KG_MAXSPANS];
 extern int kg_pu[], kg_pv[];
 
 /* the frame start: the coverage mask of the rasterizer cleared */
+#ifdef KG_POLYDIAG
+/* karabas Ф7 diagnostics (QX=-DKG_POLYDIAG): a line on the screen (kg_qhw.c) with the SRAM alias test
+   (A: 1 = 0x1fe000 and 0x3fe000 are the same word), the mask words set after ZCLR (Z), the mask bits set by the
+   last frame (C, of 64000) and its PDRAW count (P) */
+char kg_diag_str[48];
+int kg_diag_np;
+static int kg_diag_alias = -1;
+static void kg_diag_hex (char *o, unsigned v, int n)
+{
+	int i;
+	for (i = n - 1 ; i >= 0 ; i--, v >>= 4)
+		o[i] = "0123456789ABCDEF"[v & 15];
+}
+#endif
+
 void kg_poly_begin (void)
 {
+#ifdef KG_POLYDIAG
+	{
+		volatile unsigned *m = (volatile unsigned *)(SRAM_UC + QSP_MASK);
+		int i, cov = 0, z = 0;
+		kg_span_idle ();
+		if (kg_diag_alias < 0)
+		{
+			volatile unsigned *lo = (volatile unsigned *)(SRAM_UC + 0x1fe000u), *hi = (volatile unsigned *)(SRAM_UC + 0x3fe000u);
+			unsigned s0 = *lo, s1 = *hi;
+			*lo = 0x12345678u;
+			*hi = 0x9abcdef0u;
+			kg_diag_alias = *lo == 0x9abcdef0u;
+			*lo = s0; *hi = s1;
+		}
+		for (i = 0 ; i < 2000 ; i++)
+		{
+			unsigned w = m[i];
+			while (w) { cov += w & 1; w >>= 1; }
+		}
+		MMIO_QSP_ZCLR = 0;
+		kg_span_idle ();
+		for (i = 0 ; i < 2000 ; i++)
+			z += m[i] != 0;
+		memcpy (kg_diag_str, "A0 Z0000 C00000 P0000", 22);
+		kg_diag_str[1] = '0' + kg_diag_alias;
+		kg_diag_hex (kg_diag_str + 4, z, 4);
+		kg_diag_hex (kg_diag_str + 10, cov, 5);
+		kg_diag_hex (kg_diag_str + 17, kg_diag_np, 4);
+		kg_diag_np = 0;
+		return;
+	}
+#endif
 	MMIO_QSP_ZCLR = 0;
 }
 
@@ -651,6 +698,9 @@ void D_DrawPoly (void)
 			for (i = 0 ; i < n ; i++)
 				kg_poly_vtx (pu[i], pvv[i]);
 			kg_poly_draw (0);
+#ifdef KG_POLYDIAG
+			kg_diag_np++;
+#endif
 			r_drawnpolycount++;
 			return;
 		}
