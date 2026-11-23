@@ -157,7 +157,7 @@ end
 
 // ------------------------------------------------------------------ the command part (Ф7)
 localparam [3:0] R_IDLE = 4'd0, R_RA = 4'd1, R_RB = 4'd2, R_SORT = 4'd3, R_PREP = 4'd4, R_DIV = 4'd5,
-	R_STEP = 4'd6, R_X0W = 4'd7, R_NEXT = 4'd8, R_ROW = 4'd9, R_SPAN = 4'd10;
+	R_STEP = 4'd6, R_X0W = 4'd7, R_NEXT = 4'd8, R_ROW = 4'd9, R_SPAN = 4'd10, R_MUL = 4'd11, R_SPN = 4'd12;
 reg [3:0] rs = R_IDLE;
 reg [6:0] vn = 7'd0;                      // vertices written since the last PDRAW
 reg [2:0] zc_k = 3'd0;                    // ZCLR: the mask-clear spans queued
@@ -191,8 +191,9 @@ reg [1:0] r_mode = 2'd1;
 wire r_push;
 reg [8:0] r_cnt1_q = 9'd0;
 reg signed [9:0] r_y = 0;
-wire [9:0] r_xs;
-wire [8:0] r_cnt1;
+reg [9:0] r_xs = 10'd0;                  // the span of the row (R_SPN: registered, timing)
+reg [8:0] r_cnt1 = 9'd0;
+reg r_draw = 1'b0;
 
 always @(posedge clk) begin
 	r_start <= 1'b0;
@@ -245,9 +246,18 @@ reg dv_neg = 1'b0;
 reg [4:0] dv_k = 5'd0;
 wire [17:0] dv_t = { dv_r, dv_n[29] } - { 1'b0, dv_d };
 reg signed [31:0] r_step = 0;
-wire [3:0] r_fr = 4'd0 - r_ya[3:0];      // 16 * yf - Ya (0..15)
-wire signed [36:0] r_fs = $signed({ 1'b0, r_fr }) * r_step;
-wire signed [31:0] r_x0 = $signed({ {4{r_xa[15]}}, r_xa, 12'd0 }) + r_fs[35:4];
+reg [3:0] r_fr = 4'd0;                   // 16 * yf - Ya (0..15), set in R_PREP
+// (16 * yf - Ya) * step >>> 4: two partial products (one DSP each, registered), summed in the next clock (R_MUL)
+reg [19:0] r_pl = 20'd0;                  // fr * step[15:0]
+reg signed [20:0] r_ph = 0;               // fr * step[31:16]
+always @(posedge clk) begin
+	r_pl <= r_fr * r_step[15:0];
+	r_ph <= $signed({ 1'b0, r_fr }) * $signed(r_step[31:16]);
+end
+wire signed [36:0] r_fsum = $signed({ r_ph, 16'd0 }) + $signed({ 17'd0, r_pl });
+wire signed [31:0] r_fs_q = r_fsum[35:4];
+reg [1:0] r_mk = 2'd0;
+wire signed [31:0] r_x0 = $signed({ {4{r_xa[15]}}, r_xa, 12'd0 }) + r_fs_q;
 wire signed [15:0] r_yf16 = (r_ya + 16'sd15) >>> 4, r_yl16 = (r_yb + 16'sd15) >>> 4;
 // a row
 reg signed [31:0] r_xl = 0, r_xr = 0;
@@ -258,11 +268,9 @@ wire signed [31:0] e_step = e_rd[63:32], e_x = e_rd[31:0];
 wire e_on = e_act && r_y >= e_yf && r_y < e_yl;
 wire signed [16:0] r_xs_c = ({ r_xl[31], r_xl } + 33'sh0ffff) >>> 16;
 wire signed [16:0] r_xe_c = ({ r_xr[31], r_xr } + 33'sh0ffff) >>> 16;
-assign r_xs = r_xs_c < 0 ? 10'd0 : r_xs_c > 17'sd320 ? 10'd320 : r_xs_c[9:0];
-wire [9:0] r_xe = r_xe_c < 0 ? 10'd0 : r_xe_c > 17'sd320 ? 10'd320 : r_xe_c[9:0];
-wire [9:0] r_cnt = r_xe - r_xs;
-assign r_cnt1 = r_cnt[8:0] - 9'd1;
-wire r_draw = r_found == 2'd2 && r_xs < r_xe && r_y >= 0 && r_y < 10'sd200;
+wire [9:0] r_xs_w = r_xs_c < 0 ? 10'd0 : r_xs_c > 17'sd320 ? 10'd320 : r_xs_c[9:0];
+wire [9:0] r_xe_w = r_xe_c < 0 ? 10'd0 : r_xe_c > 17'sd320 ? 10'd320 : r_xe_c[9:0];
+wire [9:0] r_cnt_w = r_xe_w - r_xs_w;
 assign r_push = rs == R_SPAN && r_draw && q_room;
 
 always @(posedge clk) begin
@@ -282,6 +290,7 @@ always @(posedge clk) begin
 		rs <= R_PREP;
 	end
 	R_PREP: begin
+		r_fr <= 4'd0 - r_ya[3:0];
 		r_yf <= r_yf16[9:0];
 		r_yl <= r_yl16[9:0];
 		dv_neg <= r_xb < r_xa;
@@ -304,9 +313,14 @@ always @(posedge clk) begin
 	end
 	R_STEP: begin                         // the step truncated toward 0 (C)
 		r_step <= dv_neg ? -$signed({ 2'b00, dv_qq }) : $signed({ 2'b00, dv_qq });
-		rs <= R_X0W;
+		r_mk <= 2'd1;
+		rs <= R_MUL;
 	end
-	R_X0W: begin
+	R_MUL: begin                          // the partial products of the new step (2 clocks)
+		r_mk <= r_mk - 2'd1;
+		if (r_mk == 2'd0) rs <= R_X0W;
+	end
+	R_X0W: begin                          // (r_fsum: the sum of the registered partials)
 		e_mem[r_i] <= { 1'b1, r_yf, r_yl, r_step, r_x0 };
 		if (r_yf < r_ymin) r_ymin <= r_yf;
 		if (r_yl > r_ymax) r_ymax <= r_yl;
@@ -331,8 +345,14 @@ always @(posedge clk) begin
 			if (e_x > r_xr) r_xr <= e_x;
 			if (r_found != 2'd2) r_found <= r_found + 2'd1;
 		end
-		if (r_lastv) rs <= R_SPAN;
+		if (r_lastv) rs <= R_SPN;
 		else r_i <= r_i + 6'd1;
+	end
+	R_SPN: begin                          // the span of the row (registered)
+		r_xs <= r_xs_w;
+		r_cnt1 <= r_cnt_w[8:0] - 9'd1;
+		r_draw <= r_found == 2'd2 && r_xs_w < r_xe_w && r_y >= 0 && r_y < 10'sd200;
+		rs <= R_SPAN;
 	end
 	R_SPAN: if (r_push || !r_draw) begin
 		r_i <= 6'd0;
@@ -716,7 +736,7 @@ end
 // mask halfwords. The changed mask halfword is written back at the end of a span (P_ENDWB). The step to the next
 // pixel is done in the clock that ends the pixel (`P_STEP).
 localparam [3:0] P_IDLE = 4'd0, P_ADDR = 4'd1, P_TEX = 4'd2, P_PIX = 4'd3, P_Z = 4'd4, P_MLD = 4'd5, P_MWB = 4'd6,
-	P_MRD = 4'd7, P_ZRD = 4'd8, P_FLUSH = 4'd10, P_ENDWB = 4'd12;
+	P_MRD = 4'd7, P_ZRD = 4'd8, P_ZW = 4'd9, P_FLUSH = 4'd10, P_ENDWB = 4'd12;
 reg [3:0] ps = P_IDLE;
 reg p_z = 1'b0, p_last = 1'b0;
 reg [1:0] p_mode = 2'd0;
@@ -758,6 +778,8 @@ wire [15:0] p_zv = (p_mode != 2'd0 && !p_z && (p_zv0 == 16'd0 || p_zv0[15])) ? 1
 wire p_mtest = p_mode == 2'd1 || p_mode == 2'd2 || (p_z && p_mode == 2'd0 && polymode);   // the mask is used
 wire [15:0] p_mbit = 16'd1 << p_off[3:0];
 wire p_mhit = mh_valid && mh_idx == p_off[15:4];
+reg [15:0] p_zv_q = 16'd0;                // p_zv a clock later (the z test: the SRAM read takes longer; timing)
+always @(posedge clk) p_zv_q <= p_zv;
 
 // the step to the next pixel (or the end of the descriptor: the changed mask halfword written back at the end of
 // a span); dirty = mh_dirty after this clock
@@ -767,7 +789,7 @@ wire p_mhit = mh_valid && mh_idx == p_off[15:4];
 	p_off <= p_off + 16'd1; \
 	p_n <= p_n - 10'd1; \
 	if (p_n == 10'd1) ps <= (p_last && (dirty)) ? P_ENDWB : P_IDLE; \
-	else ps <= p_mtest ? P_MLD : p_z ? P_Z : P_ADDR;
+	else ps <= p_mtest ? P_MLD : p_z ? (p_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
 
 always @(posedge clk) begin
 	d_take <= 1'b0;
@@ -786,7 +808,7 @@ always @(posedge clk) begin
 		p_zstep <= d_zstep; p_zsh <= d_zsh;
 		if (d_z && d_mode == 2'd3) mh_valid <= 1'b0;   // a mask clear: the held halfword is stale
 		ps <= (d_mode == 2'd1 || d_mode == 2'd2 || (d_z && d_mode == 2'd0 && polymode)) ? P_MLD :
-		      d_z ? P_Z : P_ADDR;
+		      d_z ? (d_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
 	end
 	P_MLD: begin
 		if (!p_mhit)
@@ -832,7 +854,7 @@ always @(posedge clk) begin
 			sr_adr <= ZB[21:1] + { 5'd0, p_off };
 		end else if (sr_ack) begin
 			sr_req <= 1'b0;
-			if ($signed(p_zv) < $signed(sr_rdat)) begin   // behind: hidden
+			if ($signed(p_zv_q) < $signed(sr_rdat)) begin   // behind: hidden
 				if (pend) ps <= P_FLUSH;
 				else begin `P_STEP(mh_dirty) end
 			end else begin
@@ -853,6 +875,7 @@ always @(posedge clk) begin
 			`P_STEP(mh_dirty)
 		end
 	end
+	P_ZW: ps <= P_Z;                     // a z span: p_zv_q of this pixel in the next clock
 	P_ADDR: begin
 		p_a <= p_a_c;
 		ps <= P_TEX;
@@ -895,7 +918,7 @@ always @(posedge clk) begin
 			sr_req <= 1'b1; sr_we <= 1'b1;
 			sr_adr <= (p_z && p_mode == 2'd3) ? MASK[21:1] + { 5'd0, p_off } : ZB[21:1] + { 5'd0, p_off };
 			sr_sel <= 2'b11;
-			sr_dat <= (p_z && p_mode == 2'd3) ? 16'd0 : p_zv;
+			sr_dat <= (p_z && p_mode == 2'd3) ? 16'd0 : p_zv_q;
 		end else if (sr_ack) begin
 			sr_req <= 1'b0;
 			`P_STEP(mh_dirty)
