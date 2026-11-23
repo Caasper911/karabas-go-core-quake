@@ -1,7 +1,7 @@
 #!/bin/sh
 # Quake Ф7: bench of a firmware variant on the deterministic `start` hall: build (bench, F, drawer + perspective +
 # QOPT, map start, +host_framerate 0.05), ISS dump at frame 30, ISS profile of 12 frames, tb_soc 12 frames.
-#   run_poly.sh <name> [make variables, e.g. POLY=1]  -> $OUT/<name>/{iss.txt,prof.txt,soc.txt}, a summary line
+#   [RTL=1] run_poly.sh <name> [make variables, e.g. POLY=1]  -> $OUT/<name>/{iss.txt,prof.txt,soc.txt[,rtl.txt]}, a summary
 # OUT: the big files (default D:\.claude\karabas-go-core-quake\f7). Needs iss and obj_VexRiscv_FPU/tb_soc built.
 set -e
 D=$(cd "$(dirname "$0")" && pwd)
@@ -23,3 +23,10 @@ awk -F, -v n="$N" '/^F,/{c+=$3; k++} /^F,/ && k>0 {} END{if(k) printf "%s: %d fr
 awk -F, '/^F,/{c+=$3; k++} END{if(k) printf "ISS: %.3f M instructions / frame\n", c/k/1e6}' "$OUT/iss12.txt"
 grep -E "^(QSPAN|QPOLY)" "$OUT/soc.txt" || true
 head -12 "$OUT/prof.txt"
+# RTL=1: also obj_rtl_q/tb_rtl on the dump (12 frames), its fps and the frame hashes against tb_soc
+if [ -n "$RTL" ]; then
+	"$D/obj_rtl_q/tb_rtl" "$OUT/d.bin" --frames 12 > "$OUT/rtl.txt" 2>&1 || true
+	awk -F, -v n="$N" '/^F,/{c+=$3; k++} END{if(k) printf "%s RTL: %.3f M cycles / frame, %.2f fps at 79.545 MHz\n", n, c/k/1e6, 79.545e6*k/c}' "$OUT/rtl.txt"
+	grep -E "^QSPAN" "$OUT/rtl.txt" || true
+	if [ "$(grep '^F,' "$OUT/rtl.txt" | cut -d, -f4)" = "$(grep '^F,' "$OUT/soc.txt" | cut -d, -f4)" ]; then echo "frames: RTL = tb_soc"; else echo "frames: RTL != tb_soc"; fi
+fi

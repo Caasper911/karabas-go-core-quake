@@ -13,10 +13,10 @@ endif
 
 all: iss $(OBJ)/tb_soc obj_rtl/tb_rtl
 
-iss: iss.cpp
+iss: iss.cpp qspan_model.h
 	g++ -O2 -march=native -o $@ $<
 
-$(OBJ)/tb_soc: tb_soc.cpp ../rtl/vexriscv/$(CPU).v
+$(OBJ)/tb_soc: tb_soc.cpp qspan_model.h ../rtl/vexriscv/$(CPU).v
 	verilator --cc --exe --build -j 8 -O3 -Wno-fatal -Wno-lint -Wno-style \
 	  --top-module VexRiscv --prefix Vcpu -Mdir $(OBJ) -o tb_soc \
 	  -CFLAGS "-O2" -MAKEFLAGS "OPT_FAST=-O3 OPT_SLOW=-O1" ../rtl/vexriscv/$(CPU).v tb_soc.cpp >$(OBJ).log 2>&1 || { tail -20 $(OBJ).log; exit 1; }

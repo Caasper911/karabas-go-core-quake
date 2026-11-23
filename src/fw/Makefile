@@ -399,6 +399,12 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
 	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
 	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
+	# karabas Ф7: no stores to the PocketQuake debug VRAM (0x20000000) per Host_Frame: on our bus that is the SRAM, and
+	# the store after SCR_UpdateScreen waited for the frame copy (5 % of the clocks of the start hall in tb_rtl)
+	sed -i -e "s|^\t((volatile char \*)0x20000000)\[26 \* 40 + 1\] = '.';.*|\t/* karabas: no debug VRAM write */|" \
+	  -e 's|volatile char \*v = (volatile char \*)0x20000000;|static char v[26 * 40 + 2]; /* karabas: not the debug VRAM */|' $(QT)/quake/host.c
+	! grep -q '^	((volatile char \*)0x20000000)\[26' $(QT)/quake/host.c
+	grep -q 'karabas: not the debug VRAM' $(QT)/quake/host.c
 	# karabas Ф7: the polygon driver on with KG_POLY (d_init.c), the z-buffer cleared at the frame start (r_edge.c)
 	sed -i 's|^\tr_drawpolys = false;|#ifdef KG_POLY\n\tr_drawpolys = true;   /* karabas Ф7 */\n#else\n\tr_drawpolys = false;\n#endif|' $(QT)/quake/d_init.c
 	grep -q 'r_drawpolys = true;   /\* karabas' $(QT)/quake/d_init.c

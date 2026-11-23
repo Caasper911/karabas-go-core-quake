@@ -56,6 +56,7 @@ struct QSpan {
     uint64_t polys = 0, prows = 0, ptest = 0, ppass = 0, pops_clk = 0;
     static const int QP_ROW = 2, QP_VTX = 4, QP_EDGE = 36, QP_POLY = 8;
     static const uint32_t MASK = 0x1fe000u;   // the coverage mask in the SRAM: bit = pixel (320 x 200), 8000 bytes
+    bool polymode = false;                    // a ZCLR was seen (the older firmware keeps its surface cache there)
     static bool mbit(const uint8_t *sram, uint32_t o) { return (sram[MASK + (o >> 3)] >> (o & 7)) & 1; }
     static void mset(uint8_t *sram, uint32_t o) { sram[MASK + (o >> 3)] |= (uint8_t)(1u << (o & 7)); }
     QSpan() { for (auto &g : tag) g = 0xffffffffu; }
@@ -115,14 +116,14 @@ struct QSpan {
         case 0x180: if (pvn < QP_MAXV) { pvu[pvn] = (int16_t)(v & 0xffff); pvv[pvn] = (int16_t)(v >> 16); pvn++; } return true;
         case 0x184: poly(sram, v & 1); pvn = 0; return true;
         case 0x188:                                           // ZCLR: the coverage mask, 4000 halfword writes
-            memset(&sram[MASK], 0, 8000);
+            memset(&sram[MASK], 0, 8000); polymode = true;   // from now on ZSPAN marks the mask too
             ops.assign(4000, Op{1, (uint16_t)QS_ZPIX});
             return true;
         case 0x124: {
             uint32_t off = v & 0xffff, n = ((v >> 16) & 0x1ff) + 1, z = izi;
             zcmds++;
             for (uint32_t i = 0; i < n; i++, off++) {
-                if (off < 64000) { uint16_t h = (uint16_t)(z >> 16); memcpy(&sram[ZB + 2 * off], &h, 2); mset(sram, off); }
+                if (off < 64000) { uint16_t h = (uint16_t)(z >> 16); memcpy(&sram[ZB + 2 * off], &h, 2); if (polymode) mset(sram, off); }
                 z += izistep;
                 zpix++;
             }
