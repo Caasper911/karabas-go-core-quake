@@ -249,6 +249,7 @@ int main(int argc, char **argv) {
             if ((a & 0x3fff) == 0xdc) return 0xd7000000u; // drawer: id, idle
             if ((a & 0x3fff) >= 0x1000 && (a & 0x3fff) < 0x1800) return sdbuf[((a & 0x3fff) - 0x1000) >> 2];
             if ((a & 0x3fff) == 0x13c) return QSpan::stat();   // Quake Ф3
+            if ((a & 0x3fff) == 0x190) return qsp.mdata();     // Ф7: the coverage mask
             if ((a & 0x3fff) >= 0x100) return 0;
             switch (a & 0xff) {
             case 0x0c: return (uint32_t)ninstr;
@@ -293,7 +294,7 @@ int main(int argc, char **argv) {
             case 0xd8: drw.cm_adr = v; return;
             case 0xdc: return;                            // the flat cache: forget it
             }
-            if (o >= 0x100 && o < 0x180 && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3 (Ф3е: 0x140..)
+            if (o >= 0x100 && o < 0x194 && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3 (Ф3е: 0x140..)
             if (o >= 0x2000) { ring[(o - 0x2000) >> 2] = v; return; }
             if (o >= 0x1000 && o < 0x1800) { sdbuf[(o - 0x1000) >> 2] = v & 0xff; return; }
             if (o == 0x80) { sd_sector = v; return; }

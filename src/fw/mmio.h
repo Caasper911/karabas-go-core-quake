@@ -91,3 +91,16 @@
 #define MMIO_QSP_BBS     MMIO_REG(0x170)
 #define MMIO_QSP_BBT     MMIO_REG(0x174)
 #define MMIO_QSP_PSPAN   MMIO_REG(0x178)
+/* Quake Ф7: the polygon rasterizer. PVTX = { v (31..16), u (15..0) }: a screen vertex, signed 12.4 fixed point;
+   PDRAW draws the convex polygon of the vertices written since the last PDRAW with the surface above (TEX / TW,
+   SO..BBT): rows ceil(vmin) .. ceil(vmax) - 1, pixels ceil(xl) .. ceil(xr) - 1. PDRAW bit 0 = 0 (the world,
+   front to back from the BSP): a pixel is drawn where the coverage mask (below) is 0 (not covered yet); 1
+   (bmodels): where its z >= the stored one. Model: src/sim/qspan_model.h poly(). */
+#define MMIO_QSP_PVTX    MMIO_REG(0x180)
+#define MMIO_QSP_PDRAW   MMIO_REG(0x184)
+/* Ф7: the coverage mask of the rasterizer (BRAM, a bit per pixel drawn since ZCLR; ZSPAN marks its pixels too):
+   ZCLR clears it (the frame start), MADDR = word index, MDATA reads the word (bit k of word i = pixel 32 i + k)
+   and steps MADDR. */
+#define MMIO_QSP_ZCLR    MMIO_REG(0x188)
+#define MMIO_QSP_MADDR   MMIO_REG(0x18c)
+#define MMIO_QSP_MDATA   MMIO_REG(0x190)

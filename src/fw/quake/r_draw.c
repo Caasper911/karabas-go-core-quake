@@ -1,4 +1,4 @@
-/* karabas: copy of PocketQuake src/firmware/quake/r_draw.c (5792fe2) with KG_QOPT (Ф3д) */
+/* karabas: copy of PocketQuake src/firmware/quake/r_draw.c (5792fe2) with KG_QOPT (Ф3д), KG_POLY (Ф7) */
 /*
 Copyright (C) 1996-1997 Id Software, Inc.
 
@@ -411,6 +411,13 @@ PQ_FASTTEXT void R_RenderFace (msurface_t *fa, int clipflags, float planedot)
 	medge_t		*pedges, tedge;
 	clipplane_t	*pclip;
 
+#ifdef KG_POLY
+	/* karabas Ф7: the polygon driver (D_DrawPoly in d_edge.c): no edges, no spans */
+	(void)planedot;
+	R_RenderPoly (fa, clipflags);
+	return;
+#endif
+
 // skip out if no more surfs
 	if ((surface_p) >= surf_max)
 	{
@@ -680,6 +687,212 @@ void R_RenderBmodelFace (bedge_t *pedges, msurface_t *psurf)
 }
 
 
+#ifdef KG_POLY
+/*
+================
+R_RenderPoly -- karabas Ф7: the polygon driver (D_DrawPoly, d_edge.c). The face is clipped to the frustum
+planes of clipflags (the crossing of an edge from its lexicographically smaller end, so that both faces of the
+edge get the same point: no cracks at the screen border) and projected to 12.4 fixed point (kg_pu / kg_pv).
+The world vertices are projected once per frame (kg_vproj: each is shared by ~3-4 faces, a projection is a
+dependent FPU chain with a division); u = xcenter + (P . ru + cu) / z with ru = vright * xscale, etc.
+================
+*/
+#define KG_PMAXV	64
+#define KG_VCACHE	65536		/* MAX_MAP_VERTS */
+
+int		kg_pu[KG_PMAXV], kg_pv[KG_PMAXV];	/* the projected vertices for D_DrawPoly */
+
+typedef struct { int frame; int uv; float zi; int in; } kg_vproj_t;	/* in: inside the frustum (no clamp) */
+static kg_vproj_t	kg_vproj[KG_VCACHE];
+typedef struct { float p[3]; int vi; } kg_cvert_t;
+
+static vec3_t	kg_ru, kg_rv, kg_rz;		/* vright * xscale, -vup * yscale, vpn */
+static float	kg_cu, kg_cv, kg_cz;		/* -modelorg . r* */
+static int		kg_rframe = -1;
+static entity_t	*kg_rent;
+
+static inline int kg_fix4 (float x)
+{
+#ifdef __riscv_flen
+	int r; __asm__ ("fcvt.w.s %0, %1, rne" : "=r"(r) : "f"(x * 16.0f)); return r;
+#else
+	return (int)floorf (x * 16.0f + 0.5f);
+#endif
+}
+
+static void kg_proj_setup (void)
+{
+	VectorScale (vright, xscale, kg_ru);
+	VectorScale (vup, -yscale, kg_rv);
+	VectorCopy (vpn, kg_rz);
+	kg_cu = -DotProduct (modelorg, kg_ru);
+	kg_cv = -DotProduct (modelorg, kg_rv);
+	kg_cz = -DotProduct (modelorg, kg_rz);
+}
+
+/* returns 1/z; *uv = { v (31..16), u (15..0) } 12.4; *in = 1 when nothing was clamped (inside the frustum) */
+static inline float kg_project (const float *pos, int *uv, int *in)
+{
+	float z = DotProduct (pos, kg_rz) + kg_cz, lzi, u, v;
+	int ok = 1;
+
+	if (z < NEAR_CLIP)
+	{
+		z = NEAR_CLIP;
+		ok = 0;
+	}
+	lzi = 1.0f / z;
+	u = xcenter + (DotProduct (pos, kg_ru) + kg_cu) * lzi;
+	if (u < r_refdef.fvrectx_adj)
+	{
+		u = r_refdef.fvrectx_adj;
+		ok = 0;
+	}
+	if (u > r_refdef.fvrectright_adj)
+	{
+		u = r_refdef.fvrectright_adj;
+		ok = 0;
+	}
+	v = ycenter + (DotProduct (pos, kg_rv) + kg_cv) * lzi;
+	if (v < r_refdef.fvrecty_adj)
+	{
+		v = r_refdef.fvrecty_adj;
+		ok = 0;
+	}
+	if (v > r_refdef.fvrectbottom_adj)
+	{
+		v = r_refdef.fvrectbottom_adj;
+		ok = 0;
+	}
+	*uv = (kg_fix4 (v) << 16) | (kg_fix4 (u) & 0xffff);
+	*in = ok;
+	return lzi;
+}
+
+static inline int kg_vless (const float *a, const float *b)
+{
+	return a[0] < b[0] || (a[0] == b[0] && (a[1] < b[1] || (a[1] == b[1] && a[2] < b[2])));
+}
+
+void R_RenderPoly (msurface_t *fa, int clipflags)
+{
+	kg_cvert_t	va[KG_PMAXV], vb[KG_PMAXV], *cur = va, *nxt = vb, *t;
+	int			i, n = fa->numedges, nn, world = currententity == &cl_entities[0];
+	medge_t		*pedges = currententity->model->edges;
+	int			*psurfedges = currententity->model->surfedges + fa->firstedge;
+	float		nearzi = 0;
+	clipplane_t	*pclip;
+
+	if (n > KG_PMAXV - 4)
+		n = KG_PMAXV - 4;		/* never seen: a face has far fewer edges */
+	if (!world || kg_rframe != r_framecount || kg_rent != currententity)
+	{
+		kg_proj_setup ();
+		kg_rframe = world ? r_framecount : -1;
+		kg_rent = currententity;
+	}
+
+	for (i = 0 ; i < n ; i++)
+	{
+		int lindex = psurfedges[i];
+		cur[i].vi = lindex > 0 ? pedges[lindex].v[0] : pedges[-lindex].v[1];
+	}
+
+	/* the world: the projections of the frame first; all inside the frustum -> no clipping */
+	if (world)
+	{
+		int allin = 1;
+		for (i = 0 ; i < n ; i++)
+		{
+			kg_vproj_t *c = &kg_vproj[cur[i].vi];
+			if (c->frame != r_framecount)
+			{
+				c->zi = kg_project (r_pcurrentvertbase[cur[i].vi].position, &c->uv, &c->in);
+				c->frame = r_framecount;
+			}
+			allin &= c->in;
+			if (c->zi > nearzi)
+				nearzi = c->zi;
+			kg_pu[i] = (short)(c->uv & 0xffff);
+			kg_pv[i] = c->uv >> 16;
+		}
+		if (allin || !clipflags)
+			goto draw;
+		nearzi = 0;
+	}
+
+	if (clipflags)
+	{
+		for (i = 0 ; i < n ; i++)
+			VectorCopy (r_pcurrentvertbase[cur[i].vi].position, cur[i].p);
+		for (pclip = view_clipplanes ; pclip < view_clipplanes + 4 ; pclip++)
+		{
+			float dist, lastdist;
+			int last;
+			if (!(clipflags & (1 << (pclip - view_clipplanes))))
+				continue;
+			last = n - 1;
+			lastdist = DotProduct (cur[last].p, pclip->normal) - pclip->dist;
+			nn = 0;
+			for (i = 0 ; i < n ; i++)
+			{
+				dist = DotProduct (cur[i].p, pclip->normal) - pclip->dist;
+				if ((lastdist > 0) != (dist > 0))
+				{
+					const float *pa = cur[i].p, *pb = cur[last].p, *pt;
+					float da = dist, db = lastdist, frac;
+					if (kg_vless (pb, pa))
+					{
+						pt = pa; pa = pb; pb = pt;
+						da = lastdist; db = dist;
+					}
+					frac = da / (da - db);
+					nxt[nn].p[0] = pa[0] + (pb[0] - pa[0]) * frac;
+					nxt[nn].p[1] = pa[1] + (pb[1] - pa[1]) * frac;
+					nxt[nn].p[2] = pa[2] + (pb[2] - pa[2]) * frac;
+					nxt[nn].vi = -1;
+					nn++;
+				}
+				if (dist >= 0)
+					nxt[nn++] = cur[i];
+				last = i;
+				lastdist = dist;
+				if (nn >= KG_PMAXV - 1)
+					break;
+			}
+			if (nn < 3)
+				return;
+			n = nn;
+			t = cur; cur = nxt; nxt = t;
+		}
+	}
+
+	for (i = 0 ; i < n ; i++)
+	{
+		int vi = cur[i].vi, uv, in;
+		float lzi;
+		if (world && vi >= 0)
+		{
+			kg_vproj_t *c = &kg_vproj[vi];	/* projected above */
+			uv = c->uv;
+			lzi = c->zi;
+		}
+		else
+			lzi = kg_project (vi >= 0 && !clipflags ? r_pcurrentvertbase[vi].position : cur[i].p, &uv, &in);
+		if (lzi > nearzi)
+			nearzi = lzi;
+		kg_pu[i] = (short)(uv & 0xffff);
+		kg_pv[i] = uv >> 16;
+	}
+
+draw:
+	r_polydesc.numverts = n;
+	r_polydesc.nearzi = nearzi;
+	r_polydesc.pcurrentface = fa;
+	r_polydesc.pverts = NULL;
+	D_DrawPoly ();
+}
+#else
 /*
 ================
 R_RenderPoly
@@ -861,6 +1074,7 @@ void R_RenderPoly (msurface_t *fa, int clipflags)
 // draw the polygon
 	D_DrawPoly ();
 }
+#endif
 
 
 /*

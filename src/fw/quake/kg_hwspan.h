@@ -73,6 +73,17 @@ static inline void kg_pspan(int u, int v, int count)
 {
     MMIO_QSP_PSPAN = ((unsigned)(count - 1) << 17) | ((unsigned)v << 9) | (unsigned)u;
 }
+#ifdef KG_POLY
+/* Ф7: a polygon vertex (u, v: 12.4 fixed point) and the draw of the polygon (the surface as kg_persp_surface) */
+static inline void kg_poly_vtx(int u, int v)
+{
+    MMIO_QSP_PVTX = ((unsigned)v << 16) | ((unsigned)u & 0xffffu);
+}
+static inline void kg_poly_draw(int ztest)   /* 0: the world (pixels not covered yet), 1: z >= stored */
+{
+    MMIO_QSP_PDRAW = (unsigned)ztest;
+}
+#endif
 #endif
 
 #endif

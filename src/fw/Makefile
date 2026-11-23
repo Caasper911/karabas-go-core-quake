@@ -343,10 +343,13 @@ SCSRAM  ?=
 QOPT    ?=
 # Ф3е: HWPERSP=1 -> KG_HWPERSP: the perspective of D_DrawSpans8 in the drawer (needs HWSPAN=1 SCSRAM=1)
 HWPERSP ?=
+# Ф7: POLY=1 -> KG_POLY: the polygon driver (r_drawpolys; D_DrawPoly in quake/d_edge.c), the faces z-tested by the
+# rasterizer of the drawer, no edge / span sorting (needs HWSPAN=1 SCSRAM=1 HWPERSP=1)
+POLY    ?=
 # Ф3в: QX = extra compiler / LTO code generation flags (the -mtune / scheduling tries), QXN = its name (build dir)
 QX      ?=
 QXN     ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(HWPERSP),-p)$(if $(QXN),-$(QXN))
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(HWPERSP),-p)$(if $(POLY),-poly)$(if $(QXN),-$(QXN))
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -363,7 +366,7 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
            $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(QB)/kg_pak.o $(if $(HW),$(QB)/kg_qhw.o $(QB)/kg_qsave.o $(QB)/kg_save_fs.o $(QB)/kg_lz.o)
-QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP)
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP) $(if $(POLY),-DKG_POLY)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
@@ -371,7 +374,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -Wno-error=int-conversion -Wno-error=return-mismatch \
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_QUAKE $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/kg_hwspan.h
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/d_edge.c quake/kg_hwspan.h
 QOVERT  := quake/kg_plat.c quake/kg_pak.c quake/kg_qhw.c quake/kg_qsave.c quake/dataslot.h kg_save_fs.c kg_lz.c
 QOPTS   := $(QB)/opts-$(shell printf "%s" "$(if $(HW),$(QHWARGS),$(QARGS))" | md5sum | cut -c1-12)
 
@@ -396,6 +399,11 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
 	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
 	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
+	# karabas Ф7: the polygon driver on with KG_POLY (d_init.c), the z-buffer cleared at the frame start (r_edge.c)
+	sed -i 's|^\tr_drawpolys = false;|#ifdef KG_POLY\n\tr_drawpolys = true;   /* karabas Ф7 */\n#else\n\tr_drawpolys = false;\n#endif|' $(QT)/quake/d_init.c
+	grep -q 'r_drawpolys = true;   /\* karabas' $(QT)/quake/d_init.c
+	sed -i 's|^\tedge_p = r_edges;|#ifdef KG_POLY\n\t{ extern void kg_poly_begin (void); kg_poly_begin (); }   /* karabas Ф7 */\n#endif\n\tedge_p = r_edges;|' $(QT)/quake/r_edge.c
+	grep -q 'kg_poly_begin (); }   /\* karabas' $(QT)/quake/r_edge.c
 	cp $(QOVER) $(QT)/quake/
 	cp $(QOVERT) $(QT)/
 	touch $@
@@ -420,7 +428,7 @@ $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
 quake-hw:
-	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM) QOPT=$(QOPT) HWPERSP=$(HWPERSP)
+	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM) QOPT=$(QOPT) HWPERSP=$(HWPERSP) POLY=$(POLY)
 
 clean:
 	rm -rf build-*
