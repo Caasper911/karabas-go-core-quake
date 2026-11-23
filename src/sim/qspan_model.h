@@ -207,7 +207,8 @@ struct QSpan {
             prows++;
             ops.push_back({0, (uint16_t)QP_ROW});
             if (found < 2) continue;
-            int xs = (int)(((int64_t)xl + 0xffff) >> 16), xe = (int)(((int64_t)xr + 0xffff) >> 16);
+            // widened by 1/8 pixel each side (T-junction slivers; the mask makes the overlap harmless)
+            int xs = (int)(((int64_t)xl + 0xdfff) >> 16), xe = (int)(((int64_t)xr + 0x11fff) >> 16);
             if (xs < 0) xs = 0;
             if (xe > 320) xe = 320;
             if (xs < xe) persp_span(xs, y, xe - xs, sram, zmode + 1);

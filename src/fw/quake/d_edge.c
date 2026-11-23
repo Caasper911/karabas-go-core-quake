@@ -441,8 +441,8 @@ static int kg_poly_spans (const int *pu, const int *pv, int n)
 		}
 		if (found < 2)
 			continue;
-		xs = (int)(((long long)xl + 0xffff) >> 16);
-		xe = (int)(((long long)xr + 0xffff) >> 16);
+		xs = (int)(((long long)xl + 0xdfff) >> 16);	/* ceil(xl - 1/8): widened (T-junction slivers) */
+		xe = (int)(((long long)xr + 0x11fff) >> 16);	/* ceil(xr + 1/8) */
 		if (xs < 0) xs = 0;
 		if (xe > 320) xe = 320;
 		if (xs >= xe)
