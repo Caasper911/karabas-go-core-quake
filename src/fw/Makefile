@@ -362,7 +362,7 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
            printf_pocket cd_null sys_kg vid_kg snd_kg $(if $(HW),in_kg,in_null)
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
-           $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(if $(HW),$(QB)/kg_qhw.o $(QB)/kg_qsave.o $(QB)/kg_save_fs.o $(QB)/kg_lz.o)
+           $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(QB)/kg_pak.o $(if $(HW),$(QB)/kg_qhw.o $(QB)/kg_qsave.o $(QB)/kg_save_fs.o $(QB)/kg_lz.o)
 QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
@@ -372,7 +372,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_QUAKE $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
 QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/kg_hwspan.h
-QOVERT  := quake/kg_plat.c quake/kg_qhw.c quake/kg_qsave.c quake/dataslot.h kg_save_fs.c kg_lz.c
+QOVERT  := quake/kg_plat.c quake/kg_pak.c quake/kg_qhw.c quake/kg_qsave.c quake/dataslot.h kg_save_fs.c kg_lz.c
 QOPTS   := $(QB)/opts-$(shell printf "%s" "$(if $(HW),$(QHWARGS),$(QARGS))" | md5sum | cut -c1-12)
 
 $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.[chS] $(QSRC)/*.h)

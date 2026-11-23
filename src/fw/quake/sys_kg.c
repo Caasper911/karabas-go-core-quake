@@ -36,6 +36,7 @@ FILE IO: the pak files in memory
 
 typedef struct {
     int used;
+    int pak;                         /* Ф1б: 0 / 1 = pak0 / pak1 (kg_pak.c), -1 = data */
     const unsigned char *data;
     int length;
     int position;
@@ -43,19 +44,30 @@ typedef struct {
 
 static syshandle_t sys_handles[MAX_HANDLES];
 
-/* the pak of a path: id1/pak0.pak -> the one in memory; the board (Ф2): config.cfg / s<n>.sav of the save
-   slots (kg_qsave.c); anything else: not here */
+uint32_t kg_pak_size(int k);
+int kg_pak_read(int k, uint32_t off, void *dest, uint32_t len);
+
+/* Ф1б: id1/pak0.pak, id1/pak1.pak -> 0 / 1 (kg_pak.c: the F items PAK0 / PAK1, or pak0 in memory in the ISS),
+   if it is there; else -1 */
+static int pak_index(const char *path)
+{
+    int n = strlen(path), k;
+    if (n < 8 || strstr(path, "id1/") == NULL)
+        return -1;
+    if (Q_strcasecmp((char *)path + n - 8, "pak0.pak") == 0) k = 0;
+    else if (Q_strcasecmp((char *)path + n - 8, "pak1.pak") == 0) k = 1;
+    else return -1;
+    return kg_pak_size(k) > 12 ? k : -1;
+}
+
+/* the data file of a path: the board (Ф2): config.cfg / s<n>.sav of the save slots (kg_qsave.c); anything
+   else: not here */
 static const unsigned char *pak_of(const char *path, int *len)
 {
-    int n = strlen(path);
-    if (n >= 8 && Q_strcasecmp((char *)path + n - 8, "pak0.pak") == 0 &&
-        (strstr(path, "id1/") != NULL)) {
-        *len = (int)MMIO_WADSIZE;
-        if (*len > 12) return (const unsigned char *)WAD_BASE;
-    }
 #ifdef KG_HW
     return kg_sav_file(path, len);
 #else
+    (void)path; (void)len;
     return NULL;
 #endif
 }
@@ -72,10 +84,12 @@ int filelength(FILE *f)
 
 int Sys_FileOpenRead(char *path, int *hndl)
 {
-    int i, len;
-    const unsigned char *d = pak_of(path, &len);
+    int i, len = 0, k = pak_index(path);
+    const unsigned char *d = NULL;
     *hndl = -1;
-    if (!d)
+    if (k >= 0)
+        len = (int)kg_pak_size(k);
+    else if (!(d = pak_of(path, &len)))
         return -1;
     for (i = 1; i < MAX_HANDLES; i++)
         if (!sys_handles[i].used)
@@ -83,6 +97,7 @@ int Sys_FileOpenRead(char *path, int *hndl)
     if (i == MAX_HANDLES)
         Sys_Error("out of handles");
     sys_handles[i].used = 1;
+    sys_handles[i].pak = k;
     sys_handles[i].data = d;
     sys_handles[i].length = len;
     sys_handles[i].position = 0;
@@ -120,7 +135,11 @@ int Sys_FileRead(int handle, void *dest, int count)
         count = remaining;
     if (count <= 0)
         return 0;
-    Q_memcpy(dest, (void *)(h->data + h->position), count);
+    if (h->pak >= 0) {
+        if (kg_pak_read(h->pak, (uint32_t)h->position, dest, (uint32_t)count) != 0)
+            return 0;
+    } else
+        Q_memcpy(dest, (void *)(h->data + h->position), count);
     h->position += count;
     return count;
 }
@@ -134,7 +153,7 @@ int Sys_FileWrite(int handle, void *data, int count)
 int Sys_FileTime(char *path)
 {
     int len;
-    return pak_of(path, &len) ? 1 : -1;
+    return pak_index(path) >= 0 || pak_of(path, &len) ? 1 : -1;
 }
 
 void Sys_mkdir(char *path)
@@ -261,7 +280,8 @@ int main(void)
     parms.argv = av;
     parms.membase = (void *)_heap_start;
     parms.memsize = (int)(_heap_end - _heap_start);
-    Sys_Printf("kg: heap %d KB, pak %d bytes\n", parms.memsize >> 10, (int)MMIO_WADSIZE);
+    Sys_Printf("kg: heap %d KB, pak0 %d bytes, pak1 %d bytes\n", parms.memsize >> 10, (int)kg_pak_size(0),
+               (int)kg_pak_size(1));
 
     Host_Init(&parms);
 

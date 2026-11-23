@@ -1,7 +1,7 @@
 /*
  * kg_qhw.c -- the board side of the Quake platform (karabas, KG_HW; as htic/kg_htic_hw.c of Hexen):
- * - kg_wait_pak: a test picture and the log until the pak is loaded (the OSD item PAK, Menu+F1:
- *   MMIO_WADSIZE != 0; the pak is at WAD_BASE);
+ * - kg_wait_pak: a test picture and the log until pak0 is there (Ф1б: the OSD item PAK0, Menu+F1, mounts it:
+ *   kg_pak.c);
  * - the console log (last lines; term_puts feeds it) drawn on the screen by kg_exit_screen (Sys_Error,
  *   Sys_Quit) in the 8x8 font with a grey palette;
  * - kg_fps_overlay: the OSD item FPS (MMIO_SW 7..0 = 1), the frames of the last second at the top
@@ -58,12 +58,14 @@ void kg_exit_screen(int code)
     MMIO_FRAME = 0;
 }
 
+uint32_t kg_pak_size(int k);
+
 void kg_wait_pak(void)
 {
     uint8_t *fb = (uint8_t *)FB_BASE;
-    const char *msg = "PAK? id1/pak0.pak: Menu+F1";
+    const char *msg = "PAK0? id1/pak0.pak: Menu+F1";
     int x, y, i;
-    if (MMIO_WADSIZE != 0)
+    if (kg_pak_size(0) != 0)
         return;
     for (i = 0; i < 256; i++) MMIO_PAL(i) = ((i & 0xe0) << 16) | ((i & 0x1c) << 11) | ((i & 0x03) << 6);
     for (y = 0; y < 200; y++)
@@ -71,7 +73,7 @@ void kg_wait_pak(void)
     for (i = 0; msg[i]; i++) draw_char(fb, 8 * i, 192, msg[i], 0xff);
     draw_log(fb, 0xff);
     MMIO_FRAME = 0;
-    while (MMIO_WADSIZE == 0) {}
+    while (kg_pak_size(0) == 0) {}
 }
 
 void kg_fps_overlay(uint8_t *fb)
