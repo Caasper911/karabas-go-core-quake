@@ -1,12 +1,13 @@
 {
     "id": "quake",
     "name": "Quake",
-    "build": "26112304",
+    "build": "26112305",
     "visible": true,
     "type": "osd",
     "order": 33,
     "eeprom_bank": 255,
     "rtc_mode": 0,
+    "loader": { "save_dir": "/quake/saves", "save_name": "pak0"},
     "roms": [
         {
             "filename": "roms/quake.bin",
@@ -26,7 +27,7 @@
         },
         "minig": {
             "link": 2,
-            "build": "26112304",
+            "build": "26112305",
             "bitstream": "karabas_minig.bin"
         }
     },

@@ -47,7 +47,7 @@ JSON = core.json
 # map / par options (cost table 2 by default, the rule of all the cores)
 MAP_T_go ?= 5   # Ф1б (doom_sd pak slots): 5 met (26112303, 12.245 ns); 2 missed; Ф4: 4 met (26112205)
 MAP_T_mini ?= 5   # Ф1б: 5 met (26112303, 12.222 ns; bitgen crashed at its exit), 2 missed; Ф4: 5 met (26112205)
-MAP_T_minig ?= 8   # Ф6 (2-way caches): 8 met (26112304, 12.244 ns); Ф1б (doom_sd pak slots): 8 met (26112302); 2 missed 0.37 ns (kg_mcu2 img), 5 hung, 6 missed, 3 / 7 MAP segfault; Ф5: 5 met (26112301)
+MAP_T_minig ?= 2   # Ф7 (polygon rasterizer): 2 met (26112305, 12.383 ns), 8 / 4 / 6 MAP segfault, 5 missed; Ф6 (2-way caches): 8 met (26112304, 12.244 ns); Ф1б (doom_sd pak slots): 8 met (26112302); 2 missed 0.37 ns (kg_mcu2 img), 5 hung, 6 missed, 3 / 7 MAP segfault; Ф5: 5 met (26112301)
 MAP_MT ?= 2
 MAP = -logic_opt off -ol high -xe n -xt 3 -register_duplication off -r 4 -global_opt off -mt $(MAP_MT) -detail -ir off -pr b -lc auto -power off
 PAR = -ol high -xe c -mt 4
