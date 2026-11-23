@@ -70,6 +70,10 @@ int main(int argc, char **argv) {
     t->ld_addr = 0; t->ld_data = 0; t->ld_wr = 0;
     t->kbd = 0; t->kbd_wr = 0; t->ms_x = 0; t->ms_y = 0; t->ms_b = 0; t->ms_wr = 0; t->joy_l = 0; t->joy_r = 0;
     t->vid_req = 0; t->vid_adr = 0; t->vid_len = 0;
+    // Quake Ф7: --vid P [phase]: the video reads the shown buffer from the SRAM, a line of 160 halfwords every P clocks
+    // (as doom_video; 0 = none), starting at clock phase
+    long vid_p = 0, vid_ph = 0; int vid_line = 0;
+    for (int i = 2; i < argc; i++) if (!strcmp(argv[i], "--vid")) { vid_p = atol(argv[i + 1]); if (i + 2 < argc && argv[i + 2][0] != '-') vid_ph = atol(argv[i + 2]); }
     t->sdr_dq_i = 0; t->MD_I = 0; t->disp_shown = 0;
 
     // SDRAM model state
@@ -105,6 +109,12 @@ int main(int argc, char **argv) {
         t->sdr_dq_i = 0xdead;
         for (auto &r : rd) if (cyc == (uint64_t)r.at + 2) { uint16_t v; memcpy(&v, &sdram[r.addr * 2], 2); t->sdr_dq_i = v; }
 
+        t->vid_req = 0;
+        if (vid_p && cyc >= (uint64_t)vid_ph && (cyc - vid_ph) % vid_p == 0) {
+            t->vid_req = 1; t->vid_len = 160;
+            t->vid_adr = (t->disp_shown ? 0x1f0000u : 0x1e8000u) + (uint32_t)vid_line * 160u;
+            vid_line = (vid_line + 1) % 200;
+        }
         t->clk = 0; t->eval();
         t->clk = 1; t->eval();
         cyc++;
