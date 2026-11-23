@@ -14,7 +14,7 @@ make -C "$D/../fw" quake FLOAT=f HWSPAN=1 SCSRAM=1 QOPT=1 HWPERSP=1 QXN=d "$@" Q
 B=$(sed -n 's/.*-o \(build-quake[^ ]*\)\/quake.elf .*/\1/p' "$OUT/build.txt" | tail -1)
 [ -n "$B" ] || B=$(ls -td "$D"/../fw/build-quake-f-span-scs-o-p*-d | head -1 | xargs basename)
 ELF="$D/../fw/$B/quake.elf"
-"$D/iss" "$D/../fw/$B/quake.bin" --org 0x10000000 --wad "$PAK" --dump-at 30 "$OUT/d.bin" > "$OUT/iss.txt" 2>&1 || true
+"$D/iss" "$D/../fw/$B/quake.bin" --org 0x10000000 --wad "$PAK" --dump-at ${DUMPAT:-30} "$OUT/d.bin" > "$OUT/iss.txt" 2>&1 || true
 "$D/iss" x --resume "$OUT/d.bin" --frames 12 --prof "$OUT/prof_s.txt" > "$OUT/iss12.txt" 2>&1 || true
 python3 "$D/prof.py" "$ELF" "$OUT/prof_s.txt" 30 > "$OUT/prof.txt"
 rm -f "$OUT/prof_s.txt"
