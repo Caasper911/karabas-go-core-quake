@@ -374,7 +374,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -Wno-error=int-conversion -Wno-error=return-mismatch \
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_QUAKE $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/d_edge.c quake/r_sky.c quake/kg_hwspan.h
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/d_edge.c quake/r_sky.c quake/r_alias.c quake/kg_hwspan.h
 QOVERT  := quake/kg_plat.c quake/kg_pak.c quake/kg_qhw.c quake/kg_qsave.c quake/dataslot.h kg_save_fs.c kg_lz.c
 QOPTS   := $(QB)/opts-$(shell printf "%s" "$(if $(HW),$(QHWARGS),$(QARGS))" | md5sum | cut -c1-12)
 
