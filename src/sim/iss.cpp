@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
             case 0xd8: drw.cm_adr = v; return;
             case 0xdc: return;                            // the flat cache: forget it
             }
-            if (o >= 0x100 && o < 0x18c && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3 (Ф3е: 0x140..)
+            if (o >= 0x100 && o < 0x1b4 && qsp.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1)) return;   // Quake Ф3 (Ф3е: 0x140.., Ф8: ..0x1b0)
             if (o >= 0x2000) { ring[(o - 0x2000) >> 2] = v; return; }
             if (o >= 0x1000 && o < 0x1800) { sdbuf[(o - 0x1000) >> 2] = v & 0xff; return; }
             if (o == 0x80) { sd_sector = v; return; }

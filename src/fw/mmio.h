@@ -103,3 +103,21 @@
    start); the CPU reads it through SRAM_UC when the drawer is idle. */
 #define MMIO_QSP_ZCLR    MMIO_REG(0x188)
 #define QSP_MASK         0x1fe000u
+/* Quake Ф8: the alias model spans (D_PolysetDrawSpans8). Per triangle: AWHOLE (a_ststepxwhole), AFST = { a_tstepxfrac
+   (31..16), a_sstepxfrac (15..0) }, ALS (r_lstepx), AZS (r_zistepx), AW (skinwidth); per span: APTEX (the SRAM byte
+   address of its first texel), AST = { tfrac, sfrac }, AL (light), AZI (zi); ASPAN = { count - 1 (24..16), pixel
+   offset (15..0) } queues it: per pixel z tested (signed, >=), pixel = colormap[texel + (light & 0xFF00)] from
+   QSP_CMAP, z written. Model: src/sim/qspan_model.h aspan(). The skins in the SRAM KG_SKIN_BASE..KG_SKIN_END. */
+#define MMIO_QSP_AWHOLE  MMIO_REG(0x18c)
+#define MMIO_QSP_AFST    MMIO_REG(0x190)
+#define MMIO_QSP_ALS     MMIO_REG(0x194)
+#define MMIO_QSP_AZS     MMIO_REG(0x198)
+#define MMIO_QSP_AW      MMIO_REG(0x19c)
+#define MMIO_QSP_APTEX   MMIO_REG(0x1a0)
+#define MMIO_QSP_AST     MMIO_REG(0x1a4)
+#define MMIO_QSP_AL      MMIO_REG(0x1a8)
+#define MMIO_QSP_AZI     MMIO_REG(0x1ac)
+#define MMIO_QSP_ASPAN   MMIO_REG(0x1b0)
+#define QSP_CMAP         0x1fa000u   /* the colormap (64 x 256), before the mask */
+#define KG_SKIN_BASE     0x1a0000u   /* the skin cache (to QSP_CMAP) */
+#define KG_SKIN_END      QSP_CMAP

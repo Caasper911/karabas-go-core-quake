@@ -52,6 +52,9 @@ void VID_Init(unsigned char *palette)
     vid.aspect = ((float)BASEHEIGHT / (float)BASEWIDTH) * (320.0f / 240.0f);
     vid.numpages = 1;
     vid.colormap = host_colormap;
+#ifdef KG_HWALIAS
+    memcpy((void *)QSP_CMAP, vid.colormap, 64 * 256);   /* Ф8: the colormap of the alias spans of the drawer */
+#endif
     vid.fullbright = 256 - LittleLong(*((int *)vid.colormap + 2048));
     vid.buffer = vid.conbuffer = (pixel_t *)FB_BASE;
     vid.rowbytes = vid.conrowbytes = BASEWIDTH;
@@ -61,7 +64,9 @@ void VID_Init(unsigned char *palette)
     d_pzbuffer = zbuffer_storage;
 #endif
 #ifdef KG_SCSRAM
-#ifdef KG_POLY
+#if defined(KG_HWALIAS) || defined(KG_SCSMALL)   /* KG_SCSMALL: the bench, the same surface cache without the drawer spans */
+    D_InitCaches((byte *)0x00020000, KG_SKIN_BASE - 0x20000);   /* Ф8: the skin cache, the colormap, the mask after it */
+#elif defined(KG_POLY)
     D_InitCaches((byte *)0x00020000, QSP_MASK - 0x20000);   /* Ф7: the coverage mask of the rasterizer after it */
 #else
     D_InitCaches((byte *)0x00020000, 0x1e0000);   /* Ф3: the surface cache in the SRAM (the span drawer reads its texels there) */

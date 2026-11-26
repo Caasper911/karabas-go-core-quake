@@ -346,10 +346,13 @@ HWPERSP ?=
 # Ф7: POLY=1 -> KG_POLY: the polygon driver (r_drawpolys; D_DrawPoly in quake/d_edge.c), the faces z-tested by the
 # rasterizer of the drawer, no edge / span sorting (needs HWSPAN=1 SCSRAM=1 HWPERSP=1)
 POLY    ?=
+# Ф8: HWALIAS=1 -> KG_HWALIAS: the alias model spans in the drawer (d_polyse.c; needs POLY=1: the skin cache and
+# the colormap in the SRAM before the coverage mask)
+HWALIAS ?=
 # Ф3в: QX = extra compiler / LTO code generation flags (the -mtune / scheduling tries), QXN = its name (build dir)
 QX      ?=
 QXN     ?=
-QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(HWPERSP),-p)$(if $(POLY),-poly)$(if $(QXN),-$(QXN))
+QB      := build-quake-$(FLOAT)$(if $(HW),-hw)$(if $(HWSPAN),-span)$(if $(SCSRAM),-scs)$(if $(QOPT),-o)$(if $(HWPERSP),-p)$(if $(POLY),-poly)$(if $(HWALIAS),-a)$(if $(QXN),-$(QXN))
 QT      := $(QB)/src
 ifeq ($(FLOAT),f)
 QMARCH  := -march=rv32imf_zicsr -mabi=ilp32f
@@ -366,7 +369,7 @@ QENG    := chase cl_demo cl_input cl_main cl_parse cl_tent cmd common console cr
 QLIBC   := memory string ctype stdlib qsort time math file
 QOBJ    := $(addprefix $(QB)/quake/,$(addsuffix .o,$(QENG))) $(addprefix $(QB)/libc/,$(addsuffix .o,$(QLIBC))) \
            $(QB)/libc/setjmp.o $(QB)/kg_plat.o $(QB)/kg_pak.o $(if $(HW),$(QB)/kg_qhw.o $(QB)/kg_qsave.o $(QB)/kg_save_fs.o $(QB)/kg_lz.o)
-QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP) $(if $(POLY),-DKG_POLY)
+QDEFS   := $(if $(HW),-DKG_HW '-DARGS="$(QHWARGS)"',-DKG_BENCH '-DARGS="$(QARGS)"') $(if $(HWSPAN),-DKG_HWSPAN) $(if $(SCSRAM),-DKG_SCSRAM) $(if $(QOPT),-DKG_QOPT) $(if $(HWPERSP),-DKG_HWPERSP) $(if $(POLY),-DKG_POLY) $(if $(HWALIAS),-DKG_HWALIAS)
 # their flags: -O3 -flto, single-precision constants, fast-math for the renderer (d_*, r_*)
 QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -fno-builtin \
            -fsingle-precision-constant -ffunction-sections -fdata-sections -w \
@@ -438,7 +441,7 @@ $(QB)/quake.elf: $(QB)/crt0_q.o $(QOBJ) quake/link_q.ld
 $(QB)/quake.bin: $(QB)/quake.elf
 	$(CROSS)objcopy -O binary $< $@
 quake-hw:
-	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM) QOPT=$(QOPT) HWPERSP=$(HWPERSP) POLY=$(POLY)
+	$(MAKE) quake FLOAT=f HW=1 HWSPAN=$(HWSPAN) SCSRAM=$(SCSRAM) QOPT=$(QOPT) HWPERSP=$(HWPERSP) POLY=$(POLY) HWALIAS=$(HWALIAS)
 
 clean:
 	rm -rf build-*
