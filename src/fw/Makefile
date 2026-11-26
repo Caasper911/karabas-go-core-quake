@@ -395,6 +395,10 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# karabas: the save / config region of their libc in our SRAM (theirs is beyond our 32 MB SDRAM)
 	sed -i 's|^#define SAV_REGION_BASE  0x13C00000|#define SAV_REGION_BASE  0x00200000 /* karabas: SRAM */|' $(QT)/libc/file.c
 	grep -q 'SAV_REGION_BASE  0x00200000' $(QT)/libc/file.c
+	# karabas Ф7в: the view model with the z-buffer as in id Quake (PocketQuake draws it without z: its own triangles are
+	# not sorted, the back of the double-barrelled shotgun showed over the barrel)
+	sed -i 's|^\tpq_noz_mode = 1;|\tpq_noz_mode = 0;   /* karabas: the view model z-tested */|' $(QT)/quake/r_main.c
+	grep -q 'pq_noz_mode = 0;   /\* karabas' $(QT)/quake/r_main.c
 	# karabas Ф7: S_ClearBuffer silences the SFX ring of doom_audio too (snd_kg.c kg_snd_clear): the looped leftovers
 	# rattled during a load
 	sed -i 's|^    memset(shm->buffer, clear, shm->samples \* shm->samplebits / 8);|&\n    { extern void kg_snd_clear(void); kg_snd_clear(); }   /* karabas */|' $(QT)/quake/snd_dma.c

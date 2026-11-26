@@ -245,6 +245,21 @@ void IN_SendKeyEvents(void) {}   /* PocketQuake: in_pocket.c polls the pads here
 void Sys_SendKeyEvents(void)
 {
     IN_SendKeyEvents();
+#if defined(KG_SSG) || defined(KG_PITCH)
+    {
+        extern unsigned int vid_frame;
+#ifdef KG_SSG   /* karabas bench: the double-barrelled shotgun at frames 20 / 22 (the view model of the alias tests) */
+        if (vid_frame == 20)
+            Cbuf_AddText("give 3\n");
+        if (vid_frame == 22)
+            Cbuf_AddText("impulse 3\n");
+#endif
+#ifdef KG_PITCH   /* karabas bench: the view pitch, degrees (positive: down) */
+        if (vid_frame >= 5)
+            cl.viewangles[PITCH] = (KG_PITCH);
+#endif
+    }
+#endif
 #ifdef KG_SPIN
     extern unsigned int vid_frame;
     if (vid_frame >= KG_SPIN_FROM)
