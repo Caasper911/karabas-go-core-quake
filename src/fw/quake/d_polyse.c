@@ -17,7 +17,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-/* karabas Ф7в: copy of PocketQuake d_polyse.c. KG_QOPT: the pixel loop of D_PolysetDrawSpans8 (the alias models)
+/* karabas: copy of PocketQuake src/firmware/quake/d_polyse.c (5792fe2), Ф7в / Ф8. KG_QOPT: the pixel loop of D_PolysetDrawSpans8 (the alias models)
    without the fraction carries: the texel of pixel k is ptex + ((sfrac + k * r_sstepx) >> 16) +
    ((tfrac + k * r_tstepx) >> 16) * skinwidth, what the original adds up (a_ststepxwhole + the carries of
    a_sstepxfrac / a_tstepxfrac; the fractions start in 0..0xFFFF); the colormap in a register. Bit exact.
