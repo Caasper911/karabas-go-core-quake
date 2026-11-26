@@ -24,6 +24,9 @@ static short zbuffer_storage[BASEWIDTH * BASEHEIGHT] __attribute__((aligned(32))
 unsigned short d_8to16table[256];
 unsigned d_8to24table[256];
 unsigned int vid_frame;   /* karabas: also the start of KG_SPIN (sys_kg.c) */
+#ifdef KG_ACOUNT
+int kg_apix, kg_sbuilt[4];
+#endif
 
 void VID_SetPalette(unsigned char *palette)
 {
@@ -82,6 +85,16 @@ void VID_Update(vrect_t *rects)
     (void)rects;
 #ifdef KG_HW
     kg_fps_overlay((unsigned char *)FB_BASE);
+#endif
+#ifdef KG_ACOUNT   /* karabas bench: "A,<frame>,<alias pixels>" on the console */
+    {
+        extern int kg_apix;
+        extern void term_printf(const char *fmt, ...);
+        term_printf("A,%u,%d\n", vid_frame, kg_apix);
+        kg_apix = 0;
+        term_printf("S,%u,%d,%d,%d,%d\n", vid_frame, kg_sbuilt[0], kg_sbuilt[1], kg_sbuilt[2], kg_sbuilt[3]);
+        kg_sbuilt[0] = kg_sbuilt[1] = kg_sbuilt[2] = kg_sbuilt[3] = 0;
+    }
 #endif
     MMIO_FRAME = vid_frame++;   /* the board: the DMA copies the frame to the buffer not shown */
 }

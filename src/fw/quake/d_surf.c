@@ -353,6 +353,15 @@ PQ_FASTTEXT surfcache_t *D_CacheSurface (msurface_t *surface, int miplevel)
 //
 // allocate memory if needed
 //
+#ifdef KG_ACOUNT
+	{	/* karabas bench: the surface pixels built by reason (vid_kg.c prints them): 0 new, 1 dynamic light,
+		   2 texture animation, 3 light style */
+		extern int kg_sbuilt[4];
+		int why = !cache ? 0 : (cache->dlight || surface->dlightframe == r_framecount) ? 1
+			: cache->texture != r_drawsurf.texture ? 2 : 3;
+		kg_sbuilt[why] += r_drawsurf.surfwidth * r_drawsurf.surfheight;
+	}
+#endif
 	if (cache)
 		KG_SC_SAFE (cache);	/* karabas: rebuilt in place */
 	if (!cache)     // if a texture just animated, don't reallocate it
