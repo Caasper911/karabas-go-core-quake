@@ -236,7 +236,43 @@ void Sys_Sleep(void) {}
 #ifndef KG_HW
 void IN_SendKeyEvents(void) {}   /* PocketQuake: in_pocket.c polls the pads here; no input in the bench (board: in_kg.c) */
 #endif
-void Sys_SendKeyEvents(void) { IN_SendKeyEvents(); }
+/* karabas Ф7в bench (QX="-DKG_SPIN=<degrees>"): from the shown frame KG_SPIN_FROM on (MMIO_FRAME, the frame
+   numbers of the sims) the view turns by KG_SPIN degrees a frame (the turn in place of the user: new faces in
+   sight, the surfaces built); KG_SPIN_FLIP=<frames>: back and forth (the direction flips every so many frames) */
+#if defined(KG_SPIN) && !defined(KG_SPIN_FROM)
+#define KG_SPIN_FROM 30
+#endif
+void Sys_SendKeyEvents(void)
+{
+    IN_SendKeyEvents();
+#if defined(KG_SSG) || defined(KG_PITCH)
+    {
+        extern unsigned int vid_frame;
+#ifdef KG_SSG   /* karabas bench: the double-barrelled shotgun at frames 20 / 22 (the view model of the alias tests) */
+        if (vid_frame == 20)
+            Cbuf_AddText("give 3\n");
+        if (vid_frame == 22)
+            Cbuf_AddText("impulse 3\n");
+#endif
+#ifdef KG_PITCH   /* karabas bench: the view pitch, degrees (positive: down) */
+        if (vid_frame >= 5)
+            cl.viewangles[PITCH] = (KG_PITCH);
+#endif
+    }
+#endif
+#ifdef KG_SPIN
+    extern unsigned int vid_frame;
+    if (vid_frame >= KG_SPIN_FROM)
+    {
+#ifdef KG_SPIN_FLIP   /* back and forth: the direction flips every KG_SPIN_FLIP frames */
+        int dir = ((vid_frame - KG_SPIN_FROM) / (KG_SPIN_FLIP)) & 1 ? -1 : 1;
+#else
+        int dir = 1;
+#endif
+        cl.viewangles[YAW] = anglemod(cl.viewangles[YAW] + dir * (KG_SPIN));
+    }
+#endif
+}
 void Sys_HighFPPrecision(void) {}
 void Sys_LowFPPrecision(void) {}
 

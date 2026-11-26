@@ -47,7 +47,9 @@ struct Mem { int owner = 0; int busy = 0; uint32_t last = 0xffffffffu; }; // own
 #include "qspan_model.h"
 // Ф3е: pz = a perspective span (PSPAN): per pixel also a z write, and QSpan::QS_SEG clocks of arithmetic before
 // each 16-pixel segment (the reciprocal and the multiplies; no memory)
-struct QCmd { bool z; int n; std::vector<uint8_t> miss; bool pz = false; };
+struct QCmd { bool z; int n; std::vector<uint8_t> miss; bool pz = false; std::vector<QSpan::Op> ops; };
+// Ф7: a polygon (PDRAW) runs its ops (QSpan::poly): an SRAM access waits for the memory, arithmetic just counts;
+// at most QPOLYS polygons queued (their vertices and surfaces double-buffered: PVTX / PDRAW wait)
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s dump.bin [options]\n", argv[0]); return 2; }
@@ -57,6 +59,8 @@ int main(int argc, char **argv) {
     uint64_t max_cycles = 2000ull * 1000 * 1000;
     double mhz = 79.545;          // Quake Ф0: the clock for US / SFX_POS
     bool qsp_hold = false;        // Quake Ф3е-б: the surface registers wait for an idle drawer
+    size_t qpolys = 16;           // Ф7 (--qpolys N): polygons queued at most (their vertices / surfaces buffered)
+    bool qframe_async = false;    // Ф7 (--qframe-async): the FRAME write does not wait for the drawer (queued flip)
     int raw_at = -1; const char *raw_path = 0;   // --raw N file: the SRAM 0x3b0000..0x3fffff after the N-th frame write
     uint64_t n_pq = 0;            // Quake Ф0: accesses to the PocketQuake debug VRAM / sysreg
     uint32_t pal[256] = {0};      // Quake Ф1: the palette for the frame hash
@@ -72,6 +76,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--max")) max_cycles = strtoull(argv[++i], 0, 10) * 1000000ull;
         else if (!strcmp(argv[i], "--mhz")) mhz = atof(argv[++i]);
         else if (!strcmp(argv[i], "--qsp-hold")) qsp_hold = true;
+        else if (!strcmp(argv[i], "--qpolys")) qpolys = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--qframe-async")) qframe_async = true;
         else if (!strcmp(argv[i], "--raw")) { raw_at = atoi(argv[++i]); raw_path = argv[++i]; }
     }
     FILE *f = fopen(argv[1], "rb");
@@ -106,6 +112,7 @@ int main(int argc, char **argv) {
     int qi = 0, qphase = 0, qwait = 0;
     bool qseg = false;
     const size_t QDEPTH = 4;
+    uint64_t q_poly_cyc = 0;
     const uint32_t QFENCE = QSpan::ZB;
     uint64_t q_busy_cyc = 0, q_full_cyc = 0, q_fence_cyc = 0;
     Mem mem[2];
@@ -134,7 +141,15 @@ int main(int argc, char **argv) {
         if (qwait > 0) qwait--;
         else if (!qq.empty()) {
             QCmd &c = qq.front();
-            if (c.z) {
+            if (!c.ops.empty()) {
+                const QSpan::Op &op = c.ops[qi];
+                bool go = op.mem == 0 || (mem[0].owner == 0 && mem[0].busy == 0);
+                if (go) {
+                    if (op.mem) mem[0].busy = op.cyc;
+                    qwait = op.cyc - 1;
+                    if (++qi == (int)c.ops.size()) { qq.pop_front(); qi = 0; }
+                }
+            } else if (c.z) {
                 if (mem[0].owner == 0 && mem[0].busy == 0) {
                     mem[0].busy = QSpan::QS_ZPIX; qwait = QSpan::QS_ZPIX - 1;
                     if (++qi == c.n) { qq.pop_front(); qi = 0; }
@@ -188,7 +203,10 @@ int main(int argc, char **argv) {
             // Quake Ф3: a SPAN / ZSPAN write waits while the queue is full, the FRAME write until it is empty
             if (dp.active && dio && dp.left == 1 && top->dBusWishbone_WE) {
                 uint32_t o = daddr & 0x3fff;
-                if (((o == 0x120 || o == 0x124 || o == 0x178) && qq.size() >= QDEPTH) || (o == 0x04 && qbusy)) { dp.left = 2; q_full_cyc++; }
+                size_t npoly = 0;
+                for (auto &c : qq) npoly += !c.ops.empty();
+                if (((o == 0x120 || o == 0x124 || o == 0x178 || o == 0x188) && qq.size() - npoly >= QDEPTH) || (o == 0x04 && qbusy && !qframe_async)) { dp.left = 2; q_full_cyc++; }
+                else if ((o == 0x180 || o == 0x184) && npoly >= qpolys) { dp.left = 2; q_full_cyc++; q_poly_cyc++; }
                 // Ф3е-б (--qsp-hold): the surface registers (TEX / TW, 0x140..0x174) wait while the drawer has work
                 else if (qsp_hold && qbusy && (o == 0x100 || o == 0x104 || (o >= 0x140 && o <= 0x174))) { dp.left = 2; q_full_cyc++; }
             }
@@ -211,11 +229,13 @@ int main(int argc, char **argv) {
                             fflush(stdout); last_frame = cyc; if (++nframes == stop_frames) done = true;
                         }
                         else if (o >= 0x400 && o < 0x800) pal[(o - 0x400) >> 2] = v;
-                        else if (o >= 0x100 && o < 0x180) {   // Quake Ф3: the drawer (Ф3е: 0x140..)
+                        else if (o >= 0x100 && o < 0x18c) {   // Quake Ф3: the drawer (Ф3е: 0x140.., Ф7: 0x180..)
                             qs.write(o, v, sram.data(), sdram.data(), SDRAM_SIZE - 1);
                             if (o == 0x120) qq.push_back({false, (int)((v >> 16) & 0x1ff) + 1, qs.miss});
                             if (o == 0x124) qq.push_back({true, (int)((v >> 16) & 0x1ff) + 1, {}});
                             if (o == 0x178) { QCmd q{false, (int)((v >> 17) & 0x1ff) + 1, qs.miss}; q.pz = true; qq.push_back(q); }
+                            if (o == 0x184 && !qs.ops.empty()) { QCmd q{false, 0, {}}; q.ops = qs.ops; qq.push_back(q); }
+                            if (o == 0x188) { QCmd q{false, 0, {}}; q.ops = qs.ops; qq.push_back(q); }
                         }
                         else if (o == 0x08) { exit_code = (int)v; done = true; }
                     } else {
@@ -264,6 +284,11 @@ int main(int argc, char **argv) {
     printf("QSPAN cmds %llu z %llu pixels %llu z %llu fills %llu sram reads %llu; busy %.1f %%, CPU waits: queue / frame %.2f %%, SRAM fence %.2f %%\n",
            (unsigned long long)qs.cmds, (unsigned long long)qs.zcmds, (unsigned long long)qs.pix, (unsigned long long)qs.zpix,
            (unsigned long long)qs.fills, (unsigned long long)qs.srd, 100.0 * q_busy_cyc / cyc, 100.0 * q_full_cyc / cyc, 100.0 * q_fence_cyc / cyc);
+    if (qs.polys)
+        printf("QPOLY polys %llu rows %llu tested %llu drawn %llu (%.2f per screen pixel per frame / %.2f), op clocks %llu, CPU waits for a poly slot %.2f %%\n",
+               (unsigned long long)qs.polys, (unsigned long long)qs.prows, (unsigned long long)qs.ptest, (unsigned long long)qs.ppass,
+               nframes ? (double)qs.ptest / nframes / 64000 : 0.0, nframes ? (double)qs.ppass / nframes / 64000 : 0.0,
+               (unsigned long long)qs.pops_clk, 100.0 * q_poly_cyc / cyc);
     printf("END cycles %llu exit %d%s pocket-io %llu\n", (unsigned long long)cyc, exit_code, done ? "" : " (max)",
            (unsigned long long)n_pq);
     top->final();

@@ -21,7 +21,7 @@
 #define MMIO_US       MMIO_REG(0x40)  /* read: microseconds since reset */
 #define MMIO_TCMP     MMIO_REG(0x44)  /* write: the timer interrupt when US - TCMP >= 0 (and TEN) */
 #define MMIO_TEN      MMIO_REG(0x48)  /* write: bit 0 enables the timer interrupt */
-#define MMIO_SW       MMIO_REG(0x50)  /* read: OSD switches; bits 15..8 = Music (0 OPL3, 1 MIDI, 2 off) */
+#define MMIO_SW       MMIO_REG(0x50)  /* read: OSD switches; bits 15..8 = Music (0 OPL3, 1 MIDI, 2 off; Quake: Fast turn) */
 #define MMIO_OPL_ADDR MMIO_REG(0x60)  /* write: { bank, register } */
 #define MMIO_OPL_DATA MMIO_REG(0x64)  /* write: the value */
 #define MMIO_MIDI     MMIO_REG(0x68)  /* write: a MIDI byte */
@@ -91,3 +91,15 @@
 #define MMIO_QSP_BBS     MMIO_REG(0x170)
 #define MMIO_QSP_BBT     MMIO_REG(0x174)
 #define MMIO_QSP_PSPAN   MMIO_REG(0x178)
+/* Quake Ф7: the polygon rasterizer. PVTX = { v (31..16), u (15..0) }: a screen vertex, signed 12.4 fixed point;
+   PDRAW draws the convex polygon of the vertices written since the last PDRAW with the surface above (TEX / TW,
+   SO..BBT): rows ceil(vmin) .. ceil(vmax) - 1, pixels ceil(xl) .. ceil(xr) - 1. PDRAW bit 0 = 0 (the world,
+   front to back from the BSP): a pixel is drawn where the coverage mask (below) is 0 (not covered yet); 1
+   (bmodels): where its z >= the stored one. Model: src/sim/qspan_model.h poly(). */
+#define MMIO_QSP_PVTX    MMIO_REG(0x180)
+#define MMIO_QSP_PDRAW   MMIO_REG(0x184)
+/* Ф7: the coverage mask of the rasterizer in the SRAM at QSP_MASK (a bit per pixel drawn since ZCLR, bit k of
+   byte i = pixel 8 i + k; ZSPAN marks its pixels too; the end of the surface cache): ZCLR clears it (the frame
+   start); the CPU reads it through SRAM_UC when the drawer is idle. */
+#define MMIO_QSP_ZCLR    MMIO_REG(0x188)
+#define QSP_MASK         0x1fe000u

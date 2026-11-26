@@ -70,6 +70,10 @@ int main(int argc, char **argv) {
     t->ld_addr = 0; t->ld_data = 0; t->ld_wr = 0;
     t->kbd = 0; t->kbd_wr = 0; t->ms_x = 0; t->ms_y = 0; t->ms_b = 0; t->ms_wr = 0; t->joy_l = 0; t->joy_r = 0;
     t->vid_req = 0; t->vid_adr = 0; t->vid_len = 0;
+    // Quake Ф7: --vid P [phase]: the video reads the shown buffer from the SRAM, a line of 160 halfwords every P clocks
+    // (as doom_video; 0 = none), starting at clock phase
+    long vid_p = 0, vid_ph = 0; int vid_line = 0;
+    for (int i = 2; i < argc; i++) if (!strcmp(argv[i], "--vid")) { vid_p = atol(argv[i + 1]); if (i + 2 < argc && argv[i + 2][0] != '-') vid_ph = atol(argv[i + 2]); }
     t->sdr_dq_i = 0; t->MD_I = 0; t->disp_shown = 0;
 
     // SDRAM model state
@@ -89,6 +93,7 @@ int main(int argc, char **argv) {
     int nframes = 0;
     uint64_t cyc = 0, last_cyc = 0;
     uint64_t n_busy = 0, n_hold = 0, n_fence = 0, n_st[8] = {0};   // Ф1в: drawer busy, queue full holds, its states
+    uint64_t n_qps[16] = {0}, n_qrs[16] = {0};                     // Quake Ф7: quake_span pixel / rasterizer states
     std::string line;
     uint8_t last_uart = 0;
     auto err = [&](const char *m, int b) {
@@ -104,6 +109,12 @@ int main(int argc, char **argv) {
         t->sdr_dq_i = 0xdead;
         for (auto &r : rd) if (cyc == (uint64_t)r.at + 2) { uint16_t v; memcpy(&v, &sdram[r.addr * 2], 2); t->sdr_dq_i = v; }
 
+        t->vid_req = 0;
+        if (vid_p && cyc >= (uint64_t)vid_ph && (cyc - vid_ph) % vid_p == 0) {
+            t->vid_req = 1; t->vid_len = 160;
+            t->vid_adr = (t->disp_shown ? 0x1f0000u : 0x1e8000u) + (uint32_t)vid_line * 160u;
+            vid_line = (vid_line + 1) % 200;
+        }
         t->clk = 0; t->eval();
         t->clk = 1; t->eval();
         cyc++;
@@ -126,7 +137,15 @@ int main(int argc, char **argv) {
             if (c->__PVT__dBusWishbone_CYC && c->__PVT__dBusWishbone_STB && sr && s->__PVT__drw_busy) n_fence++;
             n_st[s->__PVT__g_drw__DOT__drw__DOT__st & 7]++;
 #else
-            (void)s;
+            // Quake Ф7: quake_span busy, its FIFO holds, the CPU fenced off the z-buffer / frames, the pixel states
+            if (s->__PVT__qsp_busy) n_busy++;
+            if (s->__PVT__qsp_io_hold) n_hold++;
+            auto *c = s->cpu;
+            uint32_t da = c->__PVT__dBusWishbone_ADR;
+            bool sr = !(da >> 29 & 1) && !(da >> 26 & 1);
+            if (c->__PVT__dBusWishbone_CYC && c->__PVT__dBusWishbone_STB && sr && (da & 0xfffff) >= 0xEC000 && s->__PVT__qsp_busy) n_fence++;
+            n_qps[s->__PVT__g_qsp__DOT__qsp__DOT__ps & 15]++;
+            n_qrs[s->__PVT__g_qsp__DOT__qsp__DOT__rs & 15]++;
 #endif
         }
         if (prof && (cyc & 255) == 0) fprintf(prof, "%08x %08x\n", (unsigned) t->rootp->doom_soc->cpu->__PVT__decode_to_execute_PC,
@@ -199,6 +218,14 @@ int main(int argc, char **argv) {
         }
         if (t->dbg_exit & 0x100) { printf("EXIT %d\n", t->dbg_exit & 0xff); done = true; }
     }
+#ifdef KG_QUAKE
+    printf("QSPAN busy %.1f %% FIFO-full holds %.2f %% fence %.2f %%\n", 100.0 * n_busy / cyc, 100.0 * n_hold / cyc, 100.0 * n_fence / cyc);
+    printf("QSPAN pixel states:");
+    for (int k = 0; k < 13; k++) printf(" %d:%.1f", k, 100.0 * n_qps[k] / cyc);
+    printf(" %%\nQSPAN raster states:");
+    for (int k = 0; k < 11; k++) printf(" %d:%.1f", k, 100.0 * n_qrs[k] / cyc);
+    printf(" %%\n");
+#endif
     printf("DRAWER busy %.1f %% queue-full holds %.1f %% fence %.1f %%; states idle %.1f pix %.1f ft %.1f cm %.1f fill %.1f flat %.1f %%\n",
            100.0 * n_busy / cyc, 100.0 * n_hold / cyc, 100.0 * n_fence / cyc, 100.0 * n_st[0] / cyc, 100.0 * n_st[1] / cyc, 100.0 * n_st[2] / cyc,
            100.0 * n_st[3] / cyc, 100.0 * n_st[4] / cyc, 100.0 * n_st[5] / cyc);

@@ -68,6 +68,7 @@ int dataslot_write(uint16_t slot_id, uint32_t offset, const void *src, uint32_t 
         return -1;
     memcpy(&sz, src, 4);
     name_of(k, n);
+    { extern void kg_snd_clear(void); kg_snd_clear(); }   /* Ф7: no looped sound while the SD card is written */
     return kg_save_store(n, (const uint8_t *)src + 4, sz) ? 0 : -1;
 }
 

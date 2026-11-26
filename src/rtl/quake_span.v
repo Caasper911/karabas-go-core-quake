@@ -1,47 +1,64 @@
 `timescale 1ns / 1ps
 `default_nettype none
 /*
- quake_span.v (karabas, Quake Ф3: the span drawer; Ф3е: with the perspective)
+ quake_span.v (karabas, Quake Ф3: the span drawer; Ф3е: with the perspective; Ф7: the polygon rasterizer)
 
- The inner work of D_DrawSpans8 + D_DrawZSpans (d_scan.c, KG_HWSPAN + KG_HWPERSP) in the FPGA. The texture (the
- surface cache block), the frame and the z-buffer are in the SRAM, reached through the drawer port of doom_sram
- (a halfword read or a lane write, one at a time). Functional model, bit for bit: src/sim/qspan_model.h.
+ The inner work of D_DrawSpans8 + D_DrawZSpans (d_scan.c, KG_HWSPAN + KG_HWPERSP) in the FPGA, and (Ф7) the faces of
+ the polygon driver (D_DrawPoly, d_edge.c KG_POLY). The texture (the surface cache block), the frame, the z-buffer
+ and the coverage mask are in the SRAM, reached through the drawer port of doom_sram (a halfword read or a lane
+ write, one at a time). Functional model, bit for bit: src/sim/qspan_model.h.
 
- Registers (MMIO 0x100..0x17c, src/fw/mmio.h; io_off = (offset - 0x100) / 4):
+ Registers (MMIO 0x100..0x1fc, src/fw/mmio.h; io_off = (offset - 0x100) / 4):
    00 TEX  SRAM byte address of the texture (21..0)        01 TW   its row bytes (cachewidth, 11..0)
    06 IZI, 07 IZISTEP: 1/z 16.16 of a z span (z = izi >> 16)
-   09 ZSPAN  = { count - 1 (24..16), pixel offset (15..0) }: queues count z halfwords into the z-buffer
+   09 ZSPAN  = { count - 1 (24..16), pixel offset (15..0) }: count z halfwords into the z-buffer
    16..24 SO SU SV TO TU TV ZO ZU ZV: the surface, S = sdivz * 2^ks, T = tdivz * 2^kt, Z = zi * 2^kz, each
           origin + u * grad_u + v * grad_v at screen pixel (u, v)
    25 K = { kz (23..16), kt (15..8), ks (7..0) } signed      26 SADJ, 27 TADJ (sadjust, tadjust)
    28 BBS, 29 BBT (bbextents, bbextentt)
-   30 PSPAN = { count - 1 (25..17), v (16..9), u (8..0) }: queues a perspective span (texels and z)
-   (the Ф3 registers S / T / SSTEP / TSTEP / SPAN, 02..05 / 08, are gone: the firmware with KG_HWPERSP)
- io_hold (to doom_soc, for the presented write io_sel / io_off): ZSPAN / PSPAN while the queue is full; TEX, TW
- and the surface registers while the drawer has work (the queued spans read them; measured cost ~0).
+   30 PSPAN = { count - 1 (25..17), v (16..9), u (8..0) }: a perspective span (texels and z)
+   32 PVTX = { v (31..16), u (15..0) }: a polygon vertex, signed 12.4 (at most 64 per polygon)
+   33 PDRAW: the convex polygon of the vertices since the last PDRAW with the surface above; bit 0 = 0 (the world):
+          a pixel only where the coverage mask is 0, 1 (bmodels): where its z >= the z-buffer one (signed)
+   34 ZCLR: the coverage mask to 0; from then on ZSPAN marks its pixels in the mask too
+ Ф7: every write goes into the command FIFO (512 entries, BRAM); io_hold only when it is full. The command part
+ takes them in order, one per clock: a TEX / TW / K / surface register write waits until the queued spans are
+ through the math part (its descriptors carry the texture), PVTX / PDRAW / spans until the rasterizer is idle.
  busy: work queued or running (doom_soc: the CPU waits for the frame / z-buffer SRAM and the frame copy).
 
- The math part takes the commands. A z span goes to the pixel part as one descriptor. A perspective span: S, T,
+ The rasterizer (PDRAW): per edge (both ends sorted by v; a horizontal one skipped) its rows ceil(Ya / 16) ..
+ ceil(Yb / 16) - 1, step = trunc((Xb - Xa) * 65536 / (Yb - Ya)) (a 30-step divider), x of its first row
+ Xa * 4096 + (((16 * yf - Ya) * step) >>> 4) in 2^-16 pixels, then + step per row (= qspan_model.h edge_x).
+ Per row: x of the edges covering it, xl = min, xr = max (two at least), pixels ceil(xl) .. ceil(xr) - 1 clamped
+ to 0..320, rows 0..199: a span into the queue with the test of the polygon.
+ The coverage mask (QSP_MASK, a bit per pixel, bit k of halfword i = pixel 16 i + k): the pixel part holds one
+ halfword (16 pixels), reads it when the pixel leaves it, writes it back when changed (and at the end of a span:
+ the mask is right whenever the drawer is idle). A drawn pixel of a tested span sets its bit; ZCLR = 8 spans
+ writing 0 to the mask (500 halfwords each).
+
+ The math part takes the spans. A z span goes to the pixel part as one descriptor. A perspective span: S, T,
  Z at (u, v) (origin * 1 + grad_u * u + grad_v * v through the one multiplier, summed per value), then s, t at the span start and at the far end of each 16-pixel
  segment (the last one: of its last pixel): Z = m * 2^(e - 23), r = floor(2^47 / m) (a 25-step divider),
  q = sat32((S * r) >> (ks - kz + 8 + e)) (a left shift for a negative amount), s = q + sadjust clamped as d_scan.c
  (the upper bound first); the steps (>> 4, or the reciprocal table on the last segment); one descriptor per
- segment. The pixel part draws a descriptor while the math part works on the next one: per pixel the texel
- (a halfword read unless it is the halfword read last), the pixel (two neighbours of a span in one halfword
- write), the z halfword (Z >> (kz - 15), or izi >> 16 of a z span).
+ segment. The pixel part draws a descriptor while the math part works on the next one: per pixel (a tested
+ span: the mask / the z first) the texel (a halfword read unless it is the halfword read last), the pixel (two
+ neighbours of a span in one halfword write), the z halfword (Z >> (kz - 15), at least 1 in a tested span; or
+ izi >> 16 of a z span).
  Ф5 (area): the surface registers 16..29 are a distributed RAM (one write port, one read port for the math part);
  ks / kt / kz are kept in registers too. The per-segment S, T, Z steps (grad_u * 16, or * (seg - 1)) go through
  the multiplier as well.
 */
 module quake_span #(
 	parameter [21:0] FB = 22'h3f0000,     // the work frame (byte address in the SRAM)
-	parameter [21:0] ZB = 22'h3b0000      // the z-buffer
+	parameter [21:0] ZB = 22'h3b0000,     // the z-buffer
+	parameter [21:0] MASK = 22'h1fe000    // Ф7: the coverage mask (8000 bytes)
 ) (
 	input wire clk,
 	input wire reset,
 
-	input wire io_sel,                    // a write to 0x100..0x17c is presented (doom_soc)
-	input wire [4:0] io_off,
+	input wire io_sel,                    // a write to 0x100..0x1fc is presented (doom_soc)
+	input wire [5:0] io_off,
 	input wire [31:0] io_wd,
 	output wire io_hold,
 	input wire io_we,                     // the write is taken (io_sel and no hold in doom_soc)
@@ -57,66 +74,305 @@ module quake_span #(
 	input wire [15:0] sr_rdat
 );
 
+// ------------------------------------------------------------------ the command FIFO (Ф7: BRAM, 512 x 38)
+reg [37:0] cf_mem [0:511];
+reg [8:0] cf_wp = 9'd0, cf_rp = 9'd0;
+reg [9:0] cf_cnt = 10'd0;
+reg [37:0] cf_q = 38'd0;                  // cf_mem[cf_rp] of the last clock
+reg cf_ok = 1'b0;                         // cf_q is the head (first word fall through: read at the next address)
+wire cf_full = cf_cnt >= 10'd510;
+wire cf_push = io_we;                     // doom_soc: io_sel and no io_hold
+wire cf_pop;                              // the command part takes the head in this clock
+wire [8:0] cf_rp_n = cf_rp + (cf_pop ? 9'd1 : 9'd0);
+always @(posedge clk) begin
+	if (cf_push) cf_mem[cf_wp] <= { io_off, io_wd };
+	cf_q <= cf_mem[cf_rp_n];
+end
+always @(posedge clk) begin
+	if (reset) begin
+		cf_wp <= 9'd0; cf_rp <= 9'd0; cf_cnt <= 10'd0; cf_ok <= 1'b0;
+	end else begin
+		if (cf_push) cf_wp <= cf_wp + 9'd1;
+		cf_rp <= cf_rp_n;
+		cf_cnt <= cf_cnt + (cf_push ? 10'd1 : 10'd0) - (cf_pop ? 10'd1 : 10'd0);
+		// the entry at cf_rp_n was written before this clock
+		cf_ok <= cf_cnt - (cf_pop ? 10'd1 : 10'd0) != 10'd0;
+	end
+end
+wire [5:0] c_op = cf_q[37:32];
+wire [31:0] c_wd = cf_q[31:0];
+
 // ------------------------------------------------------------------ registers
 reg [21:0] tex = 22'd0;
 reg [11:0] tw = 12'd0;
 reg [31:0] r_izi = 32'd0, r_izs = 32'd0;
 reg signed [7:0] ks = 0, kt = 0, kz = 0;
-// the surface registers 16..29 (index io_off - 16): a distributed RAM, read by the math part (pr_ra below)
+reg polymode = 1'b0;                      // a ZCLR was taken: ZSPAN marks the mask too
+// the surface registers 16..29 (index c_op - 16): a distributed RAM, read by the math part (pr_ra below)
 localparam [3:0] R_ZU = 4'd7, R_SADJ = 4'd10, R_TADJ = 4'd11, R_BBS = 4'd12, R_BBT = 4'd13;
 reg [31:0] pr_mem [0:15];
 reg [3:0] pr_ra;
 wire [31:0] pr_rd = pr_mem[pr_ra];
+wire c_reg_we;                            // the command part writes a register (c_op, c_wd) in this clock
 always @(posedge clk) begin
-	if (io_we && io_off[4] && io_off[3:0] <= 4'd13) pr_mem[io_off[3:0]] <= io_wd;
+	if (c_reg_we && c_op[5:4] == 2'b01 && c_op[3:0] <= 4'd13) pr_mem[c_op[3:0]] <= c_wd;
 end
-
-wire is_push = io_off == 5'd9 || io_off == 5'd30;
-wire is_param = io_off == 5'd0 || io_off == 5'd1 || (io_off >= 5'd16 && io_off <= 5'd29);
-
 always @(posedge clk) begin
-	if (io_we) case (io_off)
-		5'd0: tex <= io_wd[21:0];
-		5'd1: tw <= io_wd[11:0];
-		5'd6: r_izi <= io_wd;
-		5'd7: r_izs <= io_wd;
-		5'd25: begin ks <= io_wd[7:0]; kt <= io_wd[15:8]; kz <= io_wd[23:16]; end
+	if (c_reg_we) case (c_op)
+		6'd0: tex <= c_wd[21:0];
+		6'd1: tw <= c_wd[11:0];
+		6'd6: r_izi <= c_wd;
+		6'd7: r_izs <= c_wd;
+		6'd25: begin ks <= c_wd[7:0]; kt <= c_wd[15:8]; kz <= c_wd[23:16]; end
 		default: ;
 	endcase
 end
 
-// ------------------------------------------------------------------ the queue (distributed RAM, one write per clock)
+// ------------------------------------------------------------------ the span queue (distributed RAM, one write per clock)
+// { p, mode (2), n - 1, uv / off, izi, izistep }; mode of a perspective span: 0 plain, 1 the mask, 2 the z;
+// of a z span: 0 a z span, 3 a mask clear (writes 0 to the mask halfwords)
 localparam QN = 4;
-localparam EW = 1 + 9 + 17 + 64;          // { p, n - 1, uv / off, izi, izistep }
+localparam EW = 1 + 2 + 9 + 17 + 64;
 reg [EW-1:0] q_mem [0:QN-1];
 reg [1:0] q_wp = 2'd0, q_rp = 2'd0;
 reg [2:0] q_cnt = 3'd0;
 wire q_full = q_cnt == QN;
-wire push = io_we && is_push && !q_full;
-wire [EW-1:0] q_in = io_off == 5'd30 ? { 1'b1, io_wd[25:17], io_wd[16:0], 64'd0 }
-                                     : { 1'b0, io_wd[24:16], 1'b0, io_wd[15:0], r_izi, r_izs };
+reg q_push = 1'b0;
+reg [EW-1:0] q_in = {EW{1'b0}};
 reg pop = 1'b0;
 wire [EW-1:0] q_head = q_mem[q_rp];
 
 always @(posedge clk) begin
-	if (push) q_mem[q_wp] <= q_in;
+	if (q_push) q_mem[q_wp] <= q_in;
 end
 always @(posedge clk) begin
 	if (reset) begin
 		q_wp <= 2'd0; q_rp <= 2'd0; q_cnt <= 3'd0;
 	end else begin
-		if (push) q_wp <= q_wp + 2'd1;
+		if (q_push) q_wp <= q_wp + 2'd1;
 		if (pop) q_rp <= q_rp + 2'd1;
-		q_cnt <= q_cnt + (push ? 3'd1 : 3'd0) - (pop ? 3'd1 : 3'd0);
+		q_cnt <= q_cnt + (q_push ? 3'd1 : 3'd0) - (pop ? 3'd1 : 3'd0);
 	end
+end
+
+// ------------------------------------------------------------------ the command part (Ф7)
+localparam [3:0] R_IDLE = 4'd0, R_RA = 4'd1, R_RB = 4'd2, R_SORT = 4'd3, R_PREP = 4'd4, R_DIV = 4'd5,
+	R_STEP = 4'd6, R_X0W = 4'd7, R_NEXT = 4'd8, R_ROW = 4'd9, R_SPAN = 4'd10, R_MUL = 4'd11, R_SPN = 4'd12;
+reg [3:0] rs = R_IDLE;
+reg [6:0] vn = 7'd0;                      // vertices written since the last PDRAW
+reg [2:0] zc_k = 3'd0;                    // ZCLR: the mask-clear spans queued
+wire core_idle;                           // no span queued, the math / pixel parts idle (below)
+wire q_room = q_cnt + (q_push ? 3'd1 : 3'd0) < QN;
+wire c_is_reg = c_op == 6'd0 || c_op == 6'd1 || (c_op >= 6'd16 && c_op <= 6'd29);
+wire c_ready = cf_ok;
+wire c_go = c_ready && (
+	c_is_reg ? (q_cnt == 3'd0 && ms == M_IDLE && rs == R_IDLE && !r_start && !q_push) :
+	(c_op == 6'd9 || c_op == 6'd30 || c_op == 6'd34) ? (rs == R_IDLE && q_room) :
+	(c_op == 6'd32 || c_op == 6'd33) ? (rs == R_IDLE && !r_start) : 1'b1);
+// ZCLR stays the head until its 8th span is queued
+wire c_take = c_go && (c_op != 6'd34 || zc_k == 3'd7);
+assign cf_pop = c_take;
+assign c_reg_we = c_go && (c_is_reg || c_op == 6'd6 || c_op == 6'd7);
+
+// the vertices: { v, u } 12.4 (written at vn, read at r_i / r_j by the rasterizer)
+reg [31:0] vx_mem [0:63];
+reg [5:0] r_i = 6'd0;                     // the edge (from vertex r_i to r_j)
+wire r_lastv = r_i + 6'd1 == r_n[5:0] || (r_n == 7'd64 && r_i == 6'd63);
+wire [5:0] r_j = r_lastv ? 6'd0 : r_i + 6'd1;
+wire [5:0] vx_ra = rs == R_RB ? r_j : r_i;
+wire [31:0] vx_rd = vx_mem[vx_ra];
+always @(posedge clk) begin
+	if (c_go && c_op == 6'd32 && !vn[6]) vx_mem[vn[5:0]] <= c_wd;
+end
+
+reg r_start = 1'b0;
+reg [6:0] r_n = 7'd0;                     // vertices of the polygon being drawn
+reg [1:0] r_mode = 2'd1;
+wire r_push;
+reg [8:0] r_cnt1_q = 9'd0;
+reg signed [9:0] r_y = 0;
+reg [9:0] r_xs = 10'd0;                  // the span of the row (R_SPN: registered, timing)
+reg [8:0] r_cnt1 = 9'd0;
+reg r_draw = 1'b0;
+
+always @(posedge clk) begin
+	r_start <= 1'b0;
+	q_push <= 1'b0;
+	if (reset) begin
+		vn <= 7'd0; zc_k <= 3'd0; polymode <= 1'b0;
+	end else begin
+		if (c_go) case (c_op)
+			6'd9: begin
+				q_push <= 1'b1;
+				q_in <= { 1'b0, 2'd0, c_wd[24:16], 1'b0, c_wd[15:0], r_izi, r_izs };
+			end
+			6'd30: begin
+				q_push <= 1'b1;
+				q_in <= { 1'b1, 2'd0, c_wd[25:17], c_wd[16:0], 64'd0 };
+			end
+			6'd32: if (!vn[6]) vn <= vn + 7'd1;
+			6'd33: begin
+				r_start <= 1'b1; r_n <= vn; r_mode <= c_wd[0] ? 2'd2 : 2'd1;
+				vn <= 7'd0;
+			end
+			6'd34: begin
+				q_push <= 1'b1;
+				q_in <= { 1'b0, 2'd3, 9'd499, 1'b0, { 7'd0, zc_k } * 16'd500, 64'd0 };
+				zc_k <= zc_k + 3'd1;
+				polymode <= 1'b1;
+			end
+			default: ;
+		endcase
+		if (r_push) begin                 // (never with a push of the command part: the rasterizer is busy)
+			q_push <= 1'b1;
+			q_in <= { 1'b1, r_mode, r_cnt1, r_y[7:0], r_xs[8:0], 64'd0 };
+		end
+	end
+end
+
+// ------------------------------------------------------------------ the rasterizer (Ф7, qspan_model.h poly())
+// the edges: { active, yf, yl, step, x } (x: of the next row of the edge, 2^-16 pixels); read and written at r_i
+reg [84:0] e_mem [0:63];
+wire [84:0] e_rd = e_mem[r_i];
+reg signed [15:0] r_xa = 0, r_ya = 0, r_xb = 0, r_yb = 0;
+reg signed [9:0] r_yf = 0, r_yl = 0;
+reg signed [9:0] r_ymin = 0, r_ymax = 0;
+// the divider: |Xb - Xa| * 65536 / (Yb - Ya), 30 quotient bits (|Xb - Xa| < 2^14: Quake clamps to the screen)
+reg [29:0] dv_n = 30'd0;                  // the dividend, shifting out at the top
+reg [16:0] dv_r = 17'd0;                  // the remainder (< the divisor < 2^16)
+reg [29:0] dv_qq = 30'd0;
+reg [16:0] dv_d = 17'd0;
+reg dv_neg = 1'b0;
+reg [4:0] dv_k = 5'd0;
+wire [17:0] dv_t = { dv_r, dv_n[29] } - { 1'b0, dv_d };
+reg signed [31:0] r_step = 0;
+reg [3:0] r_fr = 4'd0;                   // 16 * yf - Ya (0..15), set in R_PREP
+// (16 * yf - Ya) * step >>> 4: two partial products (one DSP each, registered), summed in the next clock (R_MUL)
+reg [19:0] r_pl = 20'd0;                  // fr * step[15:0]
+reg signed [20:0] r_ph = 0;               // fr * step[31:16]
+always @(posedge clk) begin
+	r_pl <= r_fr * r_step[15:0];
+	r_ph <= $signed({ 1'b0, r_fr }) * $signed(r_step[31:16]);
+end
+wire signed [36:0] r_fsum = $signed({ r_ph, 16'd0 }) + $signed({ 17'd0, r_pl });
+wire signed [31:0] r_fs_q = r_fsum[35:4];
+reg [1:0] r_mk = 2'd0;
+wire signed [31:0] r_x0 = $signed({ {4{r_xa[15]}}, r_xa, 12'd0 }) + r_fs_q;
+wire signed [15:0] r_yf16 = (r_ya + 16'sd15) >>> 4, r_yl16 = (r_yb + 16'sd15) >>> 4;
+// a row
+reg signed [31:0] r_xl = 0, r_xr = 0;
+reg [1:0] r_found = 2'd0;
+wire e_act = e_rd[84];
+wire signed [9:0] e_yf = e_rd[83:74], e_yl = e_rd[73:64];
+wire signed [31:0] e_step = e_rd[63:32], e_x = e_rd[31:0];
+wire e_on = e_act && r_y >= e_yf && r_y < e_yl;
+wire signed [16:0] r_xs_c = ({ r_xl[31], r_xl } + 33'sh0dfff) >>> 16;
+wire signed [16:0] r_xe_c = ({ r_xr[31], r_xr } + 33'sh11fff) >>> 16;
+wire [9:0] r_xs_w = r_xs_c < 0 ? 10'd0 : r_xs_c > 17'sd320 ? 10'd320 : r_xs_c[9:0];
+wire [9:0] r_xe_w = r_xe_c < 0 ? 10'd0 : r_xe_c > 17'sd320 ? 10'd320 : r_xe_c[9:0];
+wire [9:0] r_cnt_w = r_xe_w - r_xs_w;
+assign r_push = rs == R_SPAN && r_draw && q_room;
+
+always @(posedge clk) begin
+	if (reset) rs <= R_IDLE;
+	else case (rs)
+	R_IDLE: if (r_start) begin
+		r_i <= 6'd0;
+		r_ymin <= 10'sd511; r_ymax <= -10'sd512;
+		rs <= r_n >= 7'd3 ? R_RA : R_IDLE;
+	end
+	R_RA: begin r_xa <= vx_rd[15:0]; r_ya <= vx_rd[31:16]; rs <= R_RB; end
+	R_RB: begin r_xb <= vx_rd[15:0]; r_yb <= vx_rd[31:16]; rs <= R_SORT; end
+	R_SORT: begin                         // both ends by v (the lower first): the two faces of an edge get the same numbers
+		if (r_ya > r_yb) begin
+			r_xa <= r_xb; r_ya <= r_yb; r_xb <= r_xa; r_yb <= r_ya;
+		end
+		rs <= R_PREP;
+	end
+	R_PREP: begin
+		r_fr <= 4'd0 - r_ya[3:0];
+		r_yf <= r_yf16[9:0];
+		r_yl <= r_yl16[9:0];
+		dv_neg <= r_xb < r_xa;
+		dv_n <= (r_xb < r_xa ? { 14'd0, r_xa - r_xb } : { 14'd0, r_xb - r_xa }) << 16;
+		dv_d <= { 1'b0, r_yb - r_ya };
+		dv_r <= 17'd0;
+		dv_k <= 5'd29;
+		if (r_yf16 >= r_yl16) begin         // no row (a horizontal edge too): inactive
+			e_mem[r_i] <= 85'd0;
+			rs <= R_NEXT;
+		end else
+			rs <= R_DIV;
+	end
+	R_DIV: begin
+		if (!dv_t[17]) begin dv_r <= dv_t[16:0]; dv_qq <= { dv_qq[28:0], 1'b1 }; end
+		else begin dv_r <= { dv_r[15:0], dv_n[29] }; dv_qq <= { dv_qq[28:0], 1'b0 }; end
+		dv_n <= { dv_n[28:0], 1'b0 };
+		dv_k <= dv_k - 5'd1;
+		if (dv_k == 5'd0) rs <= R_STEP;
+	end
+	R_STEP: begin                         // the step truncated toward 0 (C)
+		r_step <= dv_neg ? -$signed({ 2'b00, dv_qq }) : $signed({ 2'b00, dv_qq });
+		r_mk <= 2'd1;
+		rs <= R_MUL;
+	end
+	R_MUL: begin                          // the partial products of the new step (2 clocks)
+		r_mk <= r_mk - 2'd1;
+		if (r_mk == 2'd0) rs <= R_X0W;
+	end
+	R_X0W: begin                          // (r_fsum: the sum of the registered partials)
+		e_mem[r_i] <= { 1'b1, r_yf, r_yl, r_step, r_x0 };
+		if (r_yf < r_ymin) r_ymin <= r_yf;
+		if (r_yl > r_ymax) r_ymax <= r_yl;
+		rs <= R_NEXT;
+	end
+	R_NEXT: begin
+		if (r_lastv) begin
+			r_i <= 6'd0;
+			r_y <= r_ymin;
+			r_xl <= 32'sh7FFFFFFF; r_xr <= 32'sh80000000; r_found <= 2'd0;
+			rs <= r_ymin < r_ymax ? R_ROW : R_IDLE;
+		end else begin
+			r_i <= r_i + 6'd1;
+			rs <= R_RA;
+		end
+	end
+	// a row: the edges one per clock (x, then x + step back), then the span
+	R_ROW: begin
+		if (e_on) begin
+			e_mem[r_i] <= { e_rd[84:32], e_x + e_step };
+			if (e_x < r_xl) r_xl <= e_x;
+			if (e_x > r_xr) r_xr <= e_x;
+			if (r_found != 2'd2) r_found <= r_found + 2'd1;
+		end
+		if (r_lastv) rs <= R_SPN;
+		else r_i <= r_i + 6'd1;
+	end
+	R_SPN: begin                          // the span of the row (registered)
+		r_xs <= r_xs_w;
+		r_cnt1 <= r_cnt_w[8:0] - 9'd1;
+		r_draw <= r_found == 2'd2 && r_xs_w < r_xe_w && r_y >= 0 && r_y < 10'sd200;
+		rs <= R_SPAN;
+	end
+	R_SPAN: if (r_push || !r_draw) begin
+		r_i <= 6'd0;
+		r_xl <= 32'sh7FFFFFFF; r_xr <= 32'sh80000000; r_found <= 2'd0;
+		r_y <= r_y + 10'sd1;
+		rs <= r_y + 10'sd1 < r_ymax ? R_ROW : R_IDLE;
+	end
+	default: rs <= R_IDLE;
+	endcase
 end
 
 // ------------------------------------------------------------------ the descriptor (math -> pixel)
 reg d_valid = 1'b0;
 reg d_z = 1'b0;                           // a z span (no texels)
+reg [1:0] d_mode = 2'd0;                  // Ф7: the test of a perspective span / a z span or a mask clear (the queue)
 reg d_first = 1'b0, d_last = 1'b0;        // first / last segment of a perspective span
 reg [9:0] d_n = 10'd0;                    // pixels (1..512)
 reg [15:0] d_off = 16'd0;
+reg [21:0] d_tex = 22'd0;                 // Ф7: the texture of the descriptor (the registers may change after it)
+reg [11:0] d_tw = 12'd0;
 reg signed [31:0] d_s = 0, d_t = 0, d_ss = 0, d_ts = 0;
 reg [31:0] d_zacc = 32'd0, d_zstep = 32'd0;
 reg signed [7:0] d_zsh = 0;
@@ -139,6 +395,7 @@ reg signed [31:0] m_sn = 0, m_tn = 0;     // at its end (the next start)
 reg signed [31:0] m_ss = 0, m_ts = 0;
 reg m_first = 1'b0;                       // the first segment of the span is next
 reg m_init = 1'b0;                        // evaluating the span start (the lower bound 0)
+reg [1:0] m_mode = 2'd0;                  // Ф7: the test of the span (the queue entry)
 reg [9:0] m_zn = 10'd0;                   // a z span
 reg [15:0] m_zoff = 16'd0;
 reg [31:0] m_zizi = 32'd0, m_zizs = 32'd0;
@@ -277,8 +534,8 @@ function signed [31:0] clampq(input signed [31:0] q, input signed [31:0] adj, in
 	reg signed [32:0] x;
 	begin
 		x = { q[31], q } + { adj[31], adj };
-		if (x > { hi[31], hi }) clampq = hi;
-		else if (x < { lo[31], lo }) clampq = lo;
+		if (x > $signed({ hi[31], hi })) clampq = hi;   // Ф7: signed (a concatenation is unsigned)
+		else if (x < $signed({ lo[31], lo })) clampq = lo;
 		else clampq = x[31:0];
 	end
 endfunction
@@ -312,14 +569,15 @@ always @(posedge clk) begin
 	M_IDLE: if (q_cnt != 3'd0 && !pop) ms <= M_POP;
 	M_POP: begin
 		pop <= 1'b1;
+		m_mode <= q_head[91:90];
 		if (!q_head[EW-1]) begin
-			m_zn <= { 1'b0, q_head[EW-2:EW-10] } + 10'd1;
+			m_zn <= { 1'b0, q_head[89:81] } + 10'd1;
 			m_zoff <= q_head[79:64];
 			m_zizi <= q_head[63:32];
 			m_zizs <= q_head[31:0];
 			ms <= M_ZEMIT;
 		end else begin
-			m_left <= { 1'b0, q_head[EW-2:EW-10] } + 10'd1;
+			m_left <= { 1'b0, q_head[89:81] } + 10'd1;
 			m_v <= q_head[80:73];
 			m_off <= { 8'd0, q_head[80:73] } * 16'd320 + { 7'd0, q_head[72:64] };
 			mS <= 0; mT <= 0; mZ <= 0;
@@ -328,7 +586,7 @@ always @(posedge clk) begin
 		end
 	end
 	M_ZEMIT: if (!d_valid || d_take) begin
-		d_valid <= 1'b1; d_z <= 1'b1; d_first <= 1'b1; d_last <= 1'b1;
+		d_valid <= 1'b1; d_z <= 1'b1; d_first <= 1'b1; d_last <= 1'b1; d_mode <= m_mode;
 		d_n <= m_zn; d_off <= m_zoff; d_zacc <= m_zizi; d_zstep <= m_zizs; d_zsh <= 8'sd16;
 		ms <= M_IDLE;
 	end
@@ -457,8 +715,8 @@ always @(posedge clk) begin
 		ms <= M_EMIT;
 	end
 	M_EMIT: if (!d_valid || d_take) begin
-		d_valid <= 1'b1; d_z <= 1'b0; d_first <= m_first; d_last <= m_left == 10'd0;
-		d_n <= { 5'd0, m_seg }; d_off <= m_off;
+		d_valid <= 1'b1; d_z <= 1'b0; d_first <= m_first; d_last <= m_left == 10'd0; d_mode <= m_mode;
+		d_n <= { 5'd0, m_seg }; d_off <= m_off; d_tex <= tex; d_tw <= tw;
 		d_s <= m_s; d_t <= m_t; d_ss <= m_ss; d_ts <= m_ts;
 		d_zacc <= mZ0; d_zstep <= pr_rd; d_zsh <= kz - 8'sd15;   // zu
 		m_first <= 1'b0;
@@ -471,9 +729,17 @@ always @(posedge clk) begin
 end
 
 // ------------------------------------------------------------------ the pixel part
-localparam [2:0] P_IDLE = 3'd0, P_ADDR = 3'd1, P_TEX = 3'd2, P_PIX = 3'd3, P_Z = 3'd4;
-reg [2:0] ps = P_IDLE;
+// Ф7: a tested span (d_mode 1: the mask, 2: the z) checks the mask halfword of the pixel first (P_MLD; if it is
+// not the one held: written back if it changed, P_MWB, then read, P_MRD), mode 2 reads the z (P_ZRD); a hidden
+// pixel only steps (its pending even neighbour written alone, P_FLUSH); a drawn one sets its mask bit (the texel
+// address in the same clock). A z span with polymode marks the mask too; a mask clear (mode 3) writes 0 to the
+// mask halfwords. The changed mask halfword is written back at the end of a span (P_ENDWB). The step to the next
+// pixel is done in the clock that ends the pixel (`P_STEP).
+localparam [3:0] P_IDLE = 4'd0, P_ADDR = 4'd1, P_TEX = 4'd2, P_PIX = 4'd3, P_Z = 4'd4, P_MLD = 4'd5, P_MWB = 4'd6,
+	P_MRD = 4'd7, P_ZRD = 4'd8, P_ZW = 4'd9, P_FLUSH = 4'd10, P_ENDWB = 4'd12;
+reg [3:0] ps = P_IDLE;
 reg p_z = 1'b0, p_last = 1'b0;
+reg [1:0] p_mode = 2'd0;
 reg [9:0] p_n = 10'd0;
 reg [15:0] p_off = 16'd0;
 reg signed [31:0] p_s = 0, p_t = 0, p_ss = 0, p_ts = 0;
@@ -486,6 +752,9 @@ reg [20:0] lt_ha = 21'd0;
 reg [15:0] lt_hw = 16'd0;
 reg pend = 1'b0;                          // an even pixel waits for its odd neighbour
 reg [7:0] pend_lo = 8'd0;
+reg mh_valid = 1'b0, mh_dirty = 1'b0;     // Ф7: the mask halfword held
+reg [11:0] mh_idx = 12'd0;
+reg [15:0] mh_val = 16'd0;
 
 // the z halfword: zacc >> sh (arithmetic; sh >= 32: the sign), sh < 0: zacc << -sh (-sh >= 32: 0)
 function [15:0] zval;
@@ -500,7 +769,27 @@ function [15:0] zval;
 	end
 endfunction
 
-wire [27:0] p_row = p_t[31:16] * tw;      // (t >> 16) * tw (a DSP)
+reg [21:0] p_tex = 22'd0;
+reg [11:0] p_tw = 12'd0;
+wire [27:0] p_row = p_t[31:16] * p_tw;    // (t >> 16) * tw (a DSP)
+wire [21:0] p_a_c = p_tex + { 6'd0, p_s[31:16] } + p_row[21:0];
+wire [15:0] p_zv0 = zval(p_zacc, p_zsh);
+wire [15:0] p_zv = (p_mode != 2'd0 && !p_z && (p_zv0 == 16'd0 || p_zv0[15])) ? 16'd1 : p_zv0;   // a tested span: >= 1
+wire p_mtest = p_mode == 2'd1 || p_mode == 2'd2 || (p_z && p_mode == 2'd0 && polymode);   // the mask is used
+wire [15:0] p_mbit = 16'd1 << p_off[3:0];
+wire p_mhit = mh_valid && mh_idx == p_off[15:4];
+reg [15:0] p_zv_q = 16'd0;                // p_zv a clock later (the z test: the SRAM read takes longer; timing)
+always @(posedge clk) p_zv_q <= p_zv;
+
+// the step to the next pixel (or the end of the descriptor: the changed mask halfword written back at the end of
+// a span); dirty = mh_dirty after this clock
+`define P_STEP(dirty) \
+	p_s <= p_s + p_ss; p_t <= p_t + p_ts; \
+	p_zacc <= p_zacc + p_zstep; \
+	p_off <= p_off + 16'd1; \
+	p_n <= p_n - 10'd1; \
+	if (p_n == 10'd1) ps <= (p_last && (dirty)) ? P_ENDWB : P_IDLE; \
+	else ps <= p_mtest ? P_MLD : p_z ? (p_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
 
 always @(posedge clk) begin
 	d_take <= 1'b0;
@@ -509,17 +798,86 @@ always @(posedge clk) begin
 		ps <= P_IDLE;
 		sr_req <= 1'b0;
 		pend <= 1'b0;
+		mh_valid <= 1'b0; mh_dirty <= 1'b0;
 	end else case (ps)
 	P_IDLE: if (d_valid && !d_take) begin
 		d_take <= 1'b1;
-		p_z <= d_z; p_last <= d_last; p_n <= d_n; p_off <= d_off;
+		p_z <= d_z; p_last <= d_last; p_n <= d_n; p_off <= d_off; p_mode <= d_mode; p_tex <= d_tex; p_tw <= d_tw;
 		p_s <= d_s; p_t <= d_t; p_ss <= d_ss; p_ts <= d_ts;
 		if (d_first) p_zacc <= d_zacc;
 		p_zstep <= d_zstep; p_zsh <= d_zsh;
-		ps <= d_z ? P_Z : P_ADDR;
+		if (d_z && d_mode == 2'd3) mh_valid <= 1'b0;   // a mask clear: the held halfword is stale
+		ps <= (d_mode == 2'd1 || d_mode == 2'd2 || (d_z && d_mode == 2'd0 && polymode)) ? P_MLD :
+		      d_z ? (d_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
 	end
+	P_MLD: begin
+		if (!p_mhit)
+			ps <= (mh_valid && mh_dirty) ? P_MWB : P_MRD;
+		else if (p_z) begin                // a z span marks its pixel
+			mh_val <= mh_val | p_mbit; mh_dirty <= 1'b1;
+			ps <= P_Z;
+		end else if (p_mode == 2'd2)
+			ps <= P_ZRD;
+		else if (mh_val[p_off[3:0]]) begin // covered: hidden
+			if (pend) ps <= P_FLUSH;
+			else begin `P_STEP(mh_dirty) end
+		end else begin
+			mh_val <= mh_val | p_mbit; mh_dirty <= 1'b1;
+			p_a <= p_a_c;
+			ps <= P_TEX;
+		end
+	end
+	P_MWB, P_ENDWB: begin
+		if (!sr_req) begin
+			sr_req <= 1'b1; sr_we <= 1'b1; sr_sel <= 2'b11;
+			sr_adr <= MASK[21:1] + { 9'd0, mh_idx };
+			sr_dat <= mh_val;
+		end else if (sr_ack) begin
+			sr_req <= 1'b0;
+			mh_dirty <= 1'b0;
+			ps <= ps == P_ENDWB ? P_IDLE : P_MRD;
+		end
+	end
+	P_MRD: begin
+		if (!sr_req) begin
+			sr_req <= 1'b1; sr_we <= 1'b0;
+			sr_adr <= MASK[21:1] + { 9'd0, p_off[15:4] };
+		end else if (sr_ack) begin
+			sr_req <= 1'b0;
+			mh_valid <= 1'b1; mh_dirty <= 1'b0; mh_idx <= p_off[15:4]; mh_val <= sr_rdat;
+			ps <= P_MLD;
+		end
+	end
+	P_ZRD: begin
+		if (!sr_req) begin
+			sr_req <= 1'b1; sr_we <= 1'b0;
+			sr_adr <= ZB[21:1] + { 5'd0, p_off };
+		end else if (sr_ack) begin
+			sr_req <= 1'b0;
+			if ($signed(p_zv_q) < $signed(sr_rdat)) begin   // behind: hidden
+				if (pend) ps <= P_FLUSH;
+				else begin `P_STEP(mh_dirty) end
+			end else begin
+				mh_val <= mh_val | p_mbit; mh_dirty <= 1'b1;
+				p_a <= p_a_c;
+				ps <= P_TEX;
+			end
+		end
+	end
+	P_FLUSH: begin                       // the even neighbour alone (this odd pixel is hidden)
+		if (!sr_req) begin
+			sr_req <= 1'b1; sr_we <= 1'b1; sr_sel <= 2'b01;
+			sr_adr <= FB[21:1] + { 5'd0, p_off[15:1] };
+			sr_dat <= { 8'd0, pend_lo };
+		end else if (sr_ack) begin
+			sr_req <= 1'b0;
+			pend <= 1'b0;
+			`P_STEP(mh_dirty)
+		end
+	end
+	P_ZW: ps <= P_Z;                     // a z span: p_zv_q of this pixel in the next clock
 	P_ADDR: begin
-		p_a <= tex + { 6'd0, p_s[31:16] } + p_row[21:0];
+		p_a <= p_a_c;
 		ps <= P_TEX;
 	end
 	P_TEX: begin
@@ -558,24 +916,21 @@ always @(posedge clk) begin
 	P_Z: begin
 		if (!sr_req) begin
 			sr_req <= 1'b1; sr_we <= 1'b1;
-			sr_adr <= ZB[21:1] + { 5'd0, p_off };
+			sr_adr <= (p_z && p_mode == 2'd3) ? MASK[21:1] + { 5'd0, p_off } : ZB[21:1] + { 5'd0, p_off };
 			sr_sel <= 2'b11;
-			sr_dat <= zval(p_zacc, p_zsh);
+			sr_dat <= (p_z && p_mode == 2'd3) ? 16'd0 : p_zv_q;
 		end else if (sr_ack) begin
 			sr_req <= 1'b0;
-			p_s <= p_s + p_ss; p_t <= p_t + p_ts;
-			p_zacc <= p_zacc + p_zstep;
-			p_off <= p_off + 16'd1;
-			p_n <= p_n - 10'd1;
-			if (p_n == 10'd1) ps <= P_IDLE;
-			else ps <= p_z ? P_Z : P_ADDR;
+			`P_STEP(mh_dirty)
 		end
 	end
 	default: ps <= P_IDLE;
 	endcase
 end
+`undef P_STEP
 
-assign busy = q_cnt != 3'd0 || ms != M_IDLE || d_valid || ps != P_IDLE;
-assign io_hold = io_sel && ((is_push && q_full) || (is_param && busy));
+assign core_idle = q_cnt == 3'd0 && ms == M_IDLE && !d_valid && ps == P_IDLE;
+assign busy = cf_cnt != 10'd0 || rs != R_IDLE || r_start || q_push || !core_idle;
+assign io_hold = io_sel && cf_full;
 
 endmodule

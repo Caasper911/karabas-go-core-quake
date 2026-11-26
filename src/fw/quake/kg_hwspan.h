@@ -69,10 +69,40 @@ static inline void kg_persp_surface(float so, float su, float sv, float to, floa
     MMIO_QSP_BBS = (unsigned)bbs;
     MMIO_QSP_BBT = (unsigned)bbt;
 }
+/* Ф7: the same registers from precomputed fixed point (k = { kz, kt, ks } as MMIO_QSP_K) */
+static inline void kg_persp_regs(int so, int su, int sv, int to, int tu, int tv, int zo, int zu, int zv, unsigned k,
+                                 int sadj, int tadj, int bbs, int bbt)
+{
+    MMIO_QSP_SO = (unsigned)so;
+    MMIO_QSP_SU = (unsigned)su;
+    MMIO_QSP_SV = (unsigned)sv;
+    MMIO_QSP_TO = (unsigned)to;
+    MMIO_QSP_TU = (unsigned)tu;
+    MMIO_QSP_TV = (unsigned)tv;
+    MMIO_QSP_ZO = (unsigned)zo;
+    MMIO_QSP_ZU = (unsigned)zu;
+    MMIO_QSP_ZV = (unsigned)zv;
+    MMIO_QSP_K = k;
+    MMIO_QSP_SADJ = (unsigned)sadj;
+    MMIO_QSP_TADJ = (unsigned)tadj;
+    MMIO_QSP_BBS = (unsigned)bbs;
+    MMIO_QSP_BBT = (unsigned)bbt;
+}
 static inline void kg_pspan(int u, int v, int count)
 {
     MMIO_QSP_PSPAN = ((unsigned)(count - 1) << 17) | ((unsigned)v << 9) | (unsigned)u;
 }
+#ifdef KG_POLY
+/* Ф7: a polygon vertex (u, v: 12.4 fixed point) and the draw of the polygon (the surface as kg_persp_surface) */
+static inline void kg_poly_vtx(int u, int v)
+{
+    MMIO_QSP_PVTX = ((unsigned)v << 16) | ((unsigned)u & 0xffffu);
+}
+static inline void kg_poly_draw(int ztest)   /* 0: the world (pixels not covered yet), 1: z >= stored */
+{
+    MMIO_QSP_PDRAW = (unsigned)ztest;
+}
+#endif
 #endif
 
 #endif

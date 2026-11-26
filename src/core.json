@@ -1,12 +1,13 @@
 {
     "id": "quake",
     "name": "Quake",
-    "build": "26112304",
+    "build": "26112306",
     "visible": true,
     "type": "osd",
     "order": 33,
     "eeprom_bank": 255,
     "rtc_mode": 0,
+    "loader": { "save_dir": "/quake/saves", "save_name": "pak0"},
     "roms": [
         {
             "filename": "roms/quake.bin",
@@ -16,17 +17,17 @@
     "boards": {
         "go": {
             "link": 2,
-            "build": "26112303",
+            "build": "26112306",
             "bitstream": "karabas_go.bin"
         },
         "mini": {
             "link": 2,
-            "build": "26112303",
+            "build": "26112306",
             "bitstream": "karabas_mini.bin"
         },
         "minig": {
             "link": 2,
-            "build": "26112304",
+            "build": "26112305",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -79,6 +80,18 @@
             ],
             "default": 0,
             "index": 5
+        },
+        {
+            "type": "S",
+            "name": "Fast turn",
+            "options": [
+                "Off",
+                "100K",
+                "50K",
+                "25K"
+            ],
+            "default": 1,
+            "index": 1
         },
         {
             "type": "-"

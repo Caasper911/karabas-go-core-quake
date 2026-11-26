@@ -78,8 +78,11 @@ int dataslot_get_size(uint16_t slot_id, uint32_t *size_out)
     return *size_out ? 0 : -1;
 }
 
-/* Ф3: wait until the span drawer (quake_span) has no work (d_surf.c before a surface is built, KG_HWSPAN) */
+/* Ф3: wait until the span drawer (quake_span) has no work (KG_HWSPAN); Ф7в: the waits are counted (d_surf.c: a
+   surface cache block given to the drawer in an earlier epoch is out of its queue) */
+unsigned kg_span_epoch;
 void kg_span_idle(void)
 {
     while (MMIO_QSP_STAT & 1) {}
+    kg_span_epoch++;
 }
