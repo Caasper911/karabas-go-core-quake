@@ -21,6 +21,12 @@
    33 PDRAW: the convex polygon of the vertices since the last PDRAW with the surface above; bit 0 = 0 (the world):
           a pixel only where the coverage mask is 0, 1 (bmodels): where its z >= the z-buffer one (signed)
    34 ZCLR: the coverage mask to 0; from then on ZSPAN marks its pixels in the mask too
+   35 AWHOLE, 36 AFST = { tfrac step (31..16), sfrac step (15..0) }, 37 ALS, 38 AZS, 39 AW: Ф8, the triangle of
+          the alias model spans (a_ststepxwhole, a_tstepxfrac / a_sstepxfrac, r_lstepx, r_zistepx, skinwidth)
+   40 APTEX (the SRAM byte address of the first texel), 41 AST = { tfrac, sfrac }, 42 AL, 43 AZI: the span
+   44 ASPAN = { count - 1 (24..16), pixel offset (15..0) }: an alias span (D_PolysetDrawSpans8): per pixel z tested
+          (zi >> 16 >= the z-buffer halfword, signed), pixel = the byte at CMAP + (light & 0xFF00) + texel, z written;
+          the texel address steps by AWHOLE + the carry of sfrac + (AW on the carry of tfrac); the mask untouched
  Ф7: every write goes into the command FIFO (512 entries, BRAM); io_hold only when it is full. The command part
  takes them in order, one per clock: a TEX / TW / K / surface register write waits until the queued spans are
  through the math part (its descriptors carry the texture), PVTX / PDRAW / spans until the rasterizer is idle.
@@ -52,7 +58,8 @@
 module quake_span #(
 	parameter [21:0] FB = 22'h3f0000,     // the work frame (byte address in the SRAM)
 	parameter [21:0] ZB = 22'h3b0000,     // the z-buffer
-	parameter [21:0] MASK = 22'h1fe000    // Ф7: the coverage mask (8000 bytes)
+	parameter [21:0] MASK = 22'h1fe000,   // Ф7: the coverage mask (8000 bytes)
+	parameter [21:0] CMAP = 22'h1fa000    // Ф8: the colormap of the alias spans (64 x 256)
 ) (
 	input wire clk,
 	input wire reset,
@@ -62,7 +69,7 @@ module quake_span #(
 	input wire [31:0] io_wd,
 	output wire io_hold,
 	input wire io_we,                     // the write is taken (io_sel and no hold in doom_soc)
-	output wire busy,
+	output reg busy = 1'b0,
 
 	// doom_sram drawer port
 	output reg sr_req = 1'b0,
@@ -128,6 +135,17 @@ always @(posedge clk) begin
 	endcase
 end
 
+// Ф8: the alias span registers (35..43, written by the command part); ASPAN raises a_req, the math part copies
+// them into a descriptor (a_ack)
+reg [21:0] al_whole = 22'd0, al_ptex = 22'd0;
+reg [31:0] al_fst = 32'd0, al_st = 32'd0, al_zs = 32'd0, al_zi = 32'd0;
+reg [15:0] al_ls = 16'd0, al_l = 16'd0;
+reg [11:0] al_w = 12'd0;
+reg [15:0] al_off = 16'd0;
+reg [9:0] al_n = 10'd0;
+reg a_req = 1'b0;
+reg a_ack = 1'b0;                         // the math part took the alias span (a pulse)
+
 // ------------------------------------------------------------------ the span queue (distributed RAM, one write per clock)
 // { p, mode (2), n - 1, uv / off, izi, izistep }; mode of a perspective span: 0 plain, 1 the mask, 2 the z;
 // of a z span: 0 a z span, 3 a mask clear (writes 0 to the mask halfwords)
@@ -161,12 +179,15 @@ localparam [3:0] R_IDLE = 4'd0, R_RA = 4'd1, R_RB = 4'd2, R_SORT = 4'd3, R_PREP 
 reg [3:0] rs = R_IDLE;
 reg [6:0] vn = 7'd0;                      // vertices written since the last PDRAW
 reg [2:0] zc_k = 3'd0;                    // ZCLR: the mask-clear spans queued
-wire core_idle;                           // no span queued, the math / pixel parts idle (below)
+wire core_idle, busy_c;                           // no span queued, the math / pixel parts idle (below)
 wire q_room = q_cnt + (q_push ? 3'd1 : 3'd0) < QN;
 wire c_is_reg = c_op == 6'd0 || c_op == 6'd1 || (c_op >= 6'd16 && c_op <= 6'd29);
 wire c_ready = cf_ok;
+wire c_is_al = c_op >= 6'd35 && c_op <= 6'd43;   // Ф8: an alias register (the pending span keeps them)
 wire c_go = c_ready && (
 	c_is_reg ? (q_cnt == 3'd0 && ms == M_IDLE && rs == R_IDLE && !r_start && !q_push) :
+	c_is_al ? !a_req :
+	c_op == 6'd44 ? (!a_req && q_cnt == 3'd0 && !q_push && ms == M_IDLE && rs == R_IDLE && !r_start) :
 	(c_op == 6'd9 || c_op == 6'd30 || c_op == 6'd34) ? (rs == R_IDLE && q_room) :
 	(c_op == 6'd32 || c_op == 6'd33) ? (rs == R_IDLE && !r_start) : 1'b1);
 // ZCLR stays the head until its 8th span is queued
@@ -194,6 +215,27 @@ reg signed [9:0] r_y = 0;
 reg [9:0] r_xs = 10'd0;                  // the span of the row (R_SPN: registered, timing)
 reg [8:0] r_cnt1 = 9'd0;
 reg r_draw = 1'b0;
+
+always @(posedge clk) begin
+	if (c_go) case (c_op)                 // Ф8: the alias registers
+		6'd35: al_whole <= c_wd[21:0];
+		6'd36: al_fst <= c_wd;
+		6'd37: al_ls <= c_wd[15:0];       // the low 16 bits are enough: only bits 15..8 of the light are used
+		6'd38: al_zs <= c_wd;
+		6'd39: al_w <= c_wd[11:0];
+		6'd40: al_ptex <= c_wd[21:0];
+		6'd41: al_st <= c_wd;
+		6'd42: al_l <= c_wd[15:0];
+		6'd43: al_zi <= c_wd;
+		6'd44: begin al_off <= c_wd[15:0]; al_n <= { 1'b0, c_wd[24:16] } + 10'd1; end
+		default: ;
+	endcase
+end
+always @(posedge clk) begin
+	if (reset) a_req <= 1'b0;
+	else if (c_go && c_op == 6'd44) a_req <= 1'b1;
+	else if (a_ack) a_req <= 1'b0;
+end
 
 always @(posedge clk) begin
 	r_start <= 1'b0;
@@ -377,13 +419,15 @@ reg signed [31:0] d_s = 0, d_t = 0, d_ss = 0, d_ts = 0;
 reg [31:0] d_zacc = 32'd0, d_zstep = 32'd0;
 reg signed [7:0] d_zsh = 0;
 reg d_take = 1'b0;                        // the pixel part takes the descriptor (a pulse)
+reg d_alias = 1'b0;                       // Ф8: an alias span (d_tex = the texel address, d_s = { tfrac, sfrac },
+reg [15:0] d_ls = 16'd0;                  // d_t = the light, d_ss = AWHOLE, d_ts = AFST, d_tw = AW, d_ls = ALS)
 
 // ------------------------------------------------------------------ the math part
 localparam [4:0] M_IDLE = 5'd0, M_POP = 5'd1, M_ZEMIT = 5'd2, M_ACC = 5'd3, M_MCL2 = 5'd4,
 	M_NORM = 5'd6, M_DIV = 5'd7, M_MS = 5'd8, M_MSW1 = 5'd9, M_MSW2 = 5'd10, M_MSQ = 5'd11, M_MTQ = 5'd12,
 	M_MCL = 5'd13, M_AFTER = 5'd14, M_SEG = 5'd15, M_STEP = 5'd18, M_SW1 = 5'd19,
 	M_SW2 = 5'd20, M_SWQ = 5'd21, M_SWQ2 = 5'd22, M_EMIT = 5'd23, M_NORM2 = 5'd24, M_MSW3 = 5'd25,
-	M_MSW4 = 5'd26, M_MSW5 = 5'd27, M_MSW6 = 5'd28, M_SW3 = 5'd29, M_SW4 = 5'd30;
+	M_MSW4 = 5'd26, M_MSW5 = 5'd27, M_MSW6 = 5'd28, M_SW3 = 5'd29, M_SW4 = 5'd30, M_AEMIT = 5'd31;
 reg [4:0] ms = M_IDLE;
 reg [9:0] m_left = 10'd0;                 // pixels of the span not yet in a segment
 reg [4:0] m_seg = 5'd0;                   // pixels of the current segment
@@ -556,6 +600,7 @@ wire [9:0] seg_n = m_left >= 10'd16 ? 10'd16 : m_left;
 
 always @(posedge clk) begin
 	pop <= 1'b0;
+	a_ack <= 1'b0;
 	if (d_take) d_valid <= 1'b0;
 	if (tg_v[4]) case (tg_ch[9:8])     // a product of the accumulate pass
 		2'd0: mS <= mS + ma_p[31:0];
@@ -566,7 +611,16 @@ always @(posedge clk) begin
 		ms <= M_IDLE;
 		d_valid <= 1'b0;
 	end else case (ms)
-	M_IDLE: if (q_cnt != 3'd0 && !pop) ms <= M_POP;
+	M_IDLE: if (a_req && !a_ack) ms <= M_AEMIT;   // Ф8: older than the queued spans (ASPAN waits for an empty queue)
+		else if (q_cnt != 3'd0 && !pop) ms <= M_POP;
+	M_AEMIT: if (!d_valid || d_take) begin
+		d_valid <= 1'b1; d_alias <= 1'b1; d_z <= 1'b0; d_first <= 1'b1; d_last <= 1'b1; d_mode <= 2'd0;
+		d_n <= al_n; d_off <= al_off; d_tex <= al_ptex; d_tw <= al_w;
+		d_s <= al_st; d_t <= { 16'd0, al_l }; d_ss <= { 10'd0, al_whole }; d_ts <= al_fst; d_ls <= al_ls;
+		d_zacc <= al_zi; d_zstep <= al_zs; d_zsh <= 8'sd16;
+		a_ack <= 1'b1;
+		ms <= M_IDLE;
+	end
 	M_POP: begin
 		pop <= 1'b1;
 		m_mode <= q_head[91:90];
@@ -586,7 +640,7 @@ always @(posedge clk) begin
 		end
 	end
 	M_ZEMIT: if (!d_valid || d_take) begin
-		d_valid <= 1'b1; d_z <= 1'b1; d_first <= 1'b1; d_last <= 1'b1; d_mode <= m_mode;
+		d_valid <= 1'b1; d_z <= 1'b1; d_alias <= 1'b0; d_first <= 1'b1; d_last <= 1'b1; d_mode <= m_mode;
 		d_n <= m_zn; d_off <= m_zoff; d_zacc <= m_zizi; d_zstep <= m_zizs; d_zsh <= 8'sd16;
 		ms <= M_IDLE;
 	end
@@ -715,7 +769,7 @@ always @(posedge clk) begin
 		ms <= M_EMIT;
 	end
 	M_EMIT: if (!d_valid || d_take) begin
-		d_valid <= 1'b1; d_z <= 1'b0; d_first <= m_first; d_last <= m_left == 10'd0; d_mode <= m_mode;
+		d_valid <= 1'b1; d_z <= 1'b0; d_alias <= 1'b0; d_first <= m_first; d_last <= m_left == 10'd0; d_mode <= m_mode;
 		d_n <= { 5'd0, m_seg }; d_off <= m_off; d_tex <= tex; d_tw <= tw;
 		d_s <= m_s; d_t <= m_t; d_ss <= m_ss; d_ts <= m_ts;
 		d_zacc <= mZ0; d_zstep <= pr_rd; d_zsh <= kz - 8'sd15;   // zu
@@ -736,7 +790,7 @@ end
 // mask halfwords. The changed mask halfword is written back at the end of a span (P_ENDWB). The step to the next
 // pixel is done in the clock that ends the pixel (`P_STEP).
 localparam [3:0] P_IDLE = 4'd0, P_ADDR = 4'd1, P_TEX = 4'd2, P_PIX = 4'd3, P_Z = 4'd4, P_MLD = 4'd5, P_MWB = 4'd6,
-	P_MRD = 4'd7, P_ZRD = 4'd8, P_ZW = 4'd9, P_FLUSH = 4'd10, P_ENDWB = 4'd12;
+	P_MRD = 4'd7, P_ZRD = 4'd8, P_ZW = 4'd9, P_FLUSH = 4'd10, P_CMAP = 4'd11, P_ENDWB = 4'd12;
 reg [3:0] ps = P_IDLE;
 reg p_z = 1'b0, p_last = 1'b0;
 reg [1:0] p_mode = 2'd0;
@@ -755,6 +809,8 @@ reg [7:0] pend_lo = 8'd0;
 reg mh_valid = 1'b0, mh_dirty = 1'b0;     // Ф7: the mask halfword held
 reg [11:0] mh_idx = 12'd0;
 reg [15:0] mh_val = 16'd0;
+reg p_alias = 1'b0;                       // Ф8: an alias span (p_a the texel address, p_s = { tfrac, sfrac }, p_t
+reg [15:0] p_ls = 16'd0;                  // the light, p_ss AWHOLE, p_ts AFST, p_tw AW)
 
 // the z halfword: zacc >> sh (arithmetic; sh >= 32: the sign), sh < 0: zacc << -sh (-sh >= 32: 0)
 function [15:0] zval;
@@ -775,6 +831,11 @@ wire [27:0] p_row = p_t[31:16] * p_tw;    // (t >> 16) * tw (a DSP)
 wire [21:0] p_a_c = p_tex + { 6'd0, p_s[31:16] } + p_row[21:0];
 wire [15:0] p_zv0 = zval(p_zacc, p_zsh);
 wire [15:0] p_zv = (p_mode != 2'd0 && !p_z && (p_zv0 == 16'd0 || p_zv0[15])) ? 16'd1 : p_zv0;   // a tested span: >= 1
+// Ф8: the alias step: the fractions with their carries (the original: the texel address + AWHOLE + the carry of
+// sfrac, + AW when tfrac carries)
+wire [16:0] p_sf_n = { 1'b0, p_s[15:0] } + { 1'b0, p_ts[15:0] };
+wire [16:0] p_tf_n = { 1'b0, p_s[31:16] } + { 1'b0, p_ts[31:16] };
+wire [21:0] p_a_al = p_a + p_ss[21:0] + { 21'd0, p_sf_n[16] } + (p_tf_n[16] ? { 10'd0, p_tw } : 22'd0);
 wire p_mtest = p_mode == 2'd1 || p_mode == 2'd2 || (p_z && p_mode == 2'd0 && polymode);   // the mask is used
 wire [15:0] p_mbit = 16'd1 << p_off[3:0];
 wire p_mhit = mh_valid && mh_idx == p_off[15:4];
@@ -784,16 +845,20 @@ always @(posedge clk) p_zv_q <= p_zv;
 // the step to the next pixel (or the end of the descriptor: the changed mask halfword written back at the end of
 // a span); dirty = mh_dirty after this clock
 `define P_STEP(dirty) \
-	p_s <= p_s + p_ss; p_t <= p_t + p_ts; \
+	if (p_alias) begin \
+		p_s <= { p_tf_n[15:0], p_sf_n[15:0] }; p_t[15:0] <= p_t[15:0] + p_ls; p_a <= p_a_al; \
+	end else begin \
+		p_s <= p_s + p_ss; p_t <= p_t + p_ts; \
+	end \
 	p_zacc <= p_zacc + p_zstep; \
 	p_off <= p_off + 16'd1; \
 	p_n <= p_n - 10'd1; \
 	if (p_n == 10'd1) ps <= (p_last && (dirty)) ? P_ENDWB : P_IDLE; \
-	else ps <= p_mtest ? P_MLD : p_z ? (p_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
+	else ps <= p_alias ? P_ZW : p_mtest ? P_MLD : p_z ? (p_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
 
 always @(posedge clk) begin
 	d_take <= 1'b0;
-	if (!busy) lt_valid <= 1'b0;          // the surface cache may change while the drawer is idle
+	if (!busy_c) lt_valid <= 1'b0;          // the surface cache may change while the drawer is idle
 	if (reset) begin
 		ps <= P_IDLE;
 		sr_req <= 1'b0;
@@ -806,8 +871,10 @@ always @(posedge clk) begin
 		p_s <= d_s; p_t <= d_t; p_ss <= d_ss; p_ts <= d_ts;
 		if (d_first) p_zacc <= d_zacc;
 		p_zstep <= d_zstep; p_zsh <= d_zsh;
+		p_alias <= d_alias; p_ls <= d_ls; p_a <= d_tex;
 		if (d_z && d_mode == 2'd3) mh_valid <= 1'b0;   // a mask clear: the held halfword is stale
-		ps <= (d_mode == 2'd1 || d_mode == 2'd2 || (d_z && d_mode == 2'd0 && polymode)) ? P_MLD :
+		ps <= d_alias ? P_ZW :                  // Ф8: the z of the pixel (p_zv_q) in the next clock, then P_ZRD
+		      (d_mode == 2'd1 || d_mode == 2'd2 || (d_z && d_mode == 2'd0 && polymode)) ? P_MLD :
 		      d_z ? (d_mode == 2'd3 ? P_Z : P_ZW) : P_ADDR;
 	end
 	P_MLD: begin
@@ -857,7 +924,9 @@ always @(posedge clk) begin
 			if ($signed(p_zv_q) < $signed(sr_rdat)) begin   // behind: hidden
 				if (pend) ps <= P_FLUSH;
 				else begin `P_STEP(mh_dirty) end
-			end else begin
+			end else if (p_alias)        // Ф8: the texel address is p_a, the mask untouched
+				ps <= P_TEX;
+			else begin
 				mh_val <= mh_val | p_mbit; mh_dirty <= 1'b1;
 				p_a <= p_a_c;
 				ps <= P_TEX;
@@ -875,7 +944,7 @@ always @(posedge clk) begin
 			`P_STEP(mh_dirty)
 		end
 	end
-	P_ZW: ps <= P_Z;                     // a z span: p_zv_q of this pixel in the next clock
+	P_ZW: ps <= p_alias ? P_ZRD : P_Z;   // a z span (Ф8: an alias span): p_zv_q of this pixel in the next clock
 	P_ADDR: begin
 		p_a <= p_a_c;
 		ps <= P_TEX;
@@ -883,13 +952,23 @@ always @(posedge clk) begin
 	P_TEX: begin
 		if (lt_valid && p_a[21:1] == lt_ha && !sr_req) begin
 			p_byte <= p_a[0] ? lt_hw[15:8] : lt_hw[7:0];
-			ps <= P_PIX;
+			ps <= p_alias ? P_CMAP : P_PIX;
 		end else if (!sr_req) begin
 			sr_req <= 1'b1; sr_we <= 1'b0; sr_adr <= p_a[21:1];
 		end else if (sr_ack) begin
 			sr_req <= 1'b0;
 			lt_valid <= 1'b1; lt_ha <= p_a[21:1]; lt_hw <= sr_rdat;
 			p_byte <= p_a[0] ? sr_rdat[15:8] : sr_rdat[7:0];
+			ps <= p_alias ? P_CMAP : P_PIX;
+		end
+	end
+	P_CMAP: begin                        // Ф8: the colormap byte of (light & 0xFF00) + texel
+		if (!sr_req) begin
+			sr_req <= 1'b1; sr_we <= 1'b0;
+			sr_adr <= CMAP[21:1] + { 6'd0, p_t[15:8], p_byte[7:1] };
+		end else if (sr_ack) begin
+			sr_req <= 1'b0;
+			p_byte <= p_byte[0] ? sr_rdat[15:8] : sr_rdat[7:0];
 			ps <= P_PIX;
 		end
 	end
@@ -930,7 +1009,10 @@ end
 `undef P_STEP
 
 assign core_idle = q_cnt == 3'd0 && ms == M_IDLE && !d_valid && ps == P_IDLE;
-assign busy = cf_cnt != 10'd0 || rs != R_IDLE || r_start || q_push || !core_idle;
+assign busy_c = cf_cnt != 10'd0 || rs != R_IDLE || r_start || q_push || a_req || !core_idle;
+// �8�: busy is a FF (the OR above to the SRAM address IOB of doom_soc was 14 ns): a write sets it in the next clock
+// (as busy_c did: cf_cnt grows in the next clock), it falls a clock after busy_c
+always @(posedge clk) busy <= !reset && (busy_c || io_we);
 assign io_hold = io_sel && cf_full;
 
 endmodule

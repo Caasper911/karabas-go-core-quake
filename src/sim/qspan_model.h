@@ -78,6 +78,13 @@ struct QSpan {
         ops.clear();
         ops.push_back({0, (uint16_t)QA_SPAN});
         aspans++;
+        static const char *tr = getenv("QA_TRACE");              // debug: the spans over pixel offset QA_TRACE
+        if (tr) {
+            uint32_t t = (uint32_t)atoi(tr);
+            if (t >= off && t < off + n)
+                fprintf(stderr, "ASPAN off %u n %u ptex %06x sf %04x tf %04x l %08x zi %08x whole %d fs %04x ft %04x ls %d zs %d w %u\n",
+                        off, n, ptex, sf, tf, (uint32_t)l, (uint32_t)zi, a_whole, a_fs, a_ft, a_ls, a_zs, a_w);
+        }
         for (uint32_t i = 0; i < n; i++, off++) {
             uint32_t o = off < 64000 ? off : 0;
             int16_t old;
@@ -193,7 +200,8 @@ struct QSpan {
         }
         return false;
     }
-    static uint32_t stat() { return 0x95000000u; }   // QSP_ID, never busy (the model runs at once)
+    // QSP_ID (Ф8: 0x96, the alias spans; QSP_OLDID set: 0x95, a drawer without them), never busy (the model runs at once)
+    static uint32_t stat() { static const bool old = getenv("QSP_OLDID") != nullptr; return old ? 0x95000000u : 0x96000000u; }
 
     // s (or t) of a point: (S * r) >> (k - kz + 8 + e), with Z = m * 2^(e - 23), m in [2^23, 2^24), r = 2^47 / m;
     // saturated to int32 (s = sdivz * 65536 / zi as d_scan.c; a Z <= 0 gives the biggest value)

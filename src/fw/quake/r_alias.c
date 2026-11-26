@@ -684,7 +684,9 @@ void R_AliasSetupSkin (void)
 #ifdef KG_HWALIAS
 	{	/* karabas Ф8: the drawer reads the skin in the SRAM (d_polyse.c) */
 		extern void *kg_skin_sram (const void *src, int size);
-		r_affinetridesc.pskin = kg_skin_sram (r_affinetridesc.pskin, a_skinwidth * pmdl->skinheight);
+		extern int kg_hwalias;
+		if (kg_hwalias)
+			r_affinetridesc.pskin = kg_skin_sram (r_affinetridesc.pskin, a_skinwidth * pmdl->skinheight);
 	}
 #endif
 	r_affinetridesc.skinwidth = a_skinwidth;

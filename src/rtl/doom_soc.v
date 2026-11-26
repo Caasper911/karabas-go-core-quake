@@ -426,7 +426,7 @@ always @(posedge clk) begin
 			// the registers of the top (the sector buffer 0x1000.. too): not by the low byte below
 			io_dat <= aud_rd;
 		end else if (qsp_sel_io) begin
-			io_dat <= io_off[7:0] == 8'h3c ? { 8'h95, 23'd0, qsp_busy } : 32'd0;   // Quake Ф3: STAT
+			io_dat <= io_off[7:0] == 8'h3c ? { 8'h96, 23'd0, qsp_busy } : 32'd0;   // Quake Ф3: STAT (Ф8: ID 0x96 = the alias spans)
 		end else begin
 			case (io_off[7:0])
 				8'h0c: io_dat <= cycles;

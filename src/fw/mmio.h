@@ -68,7 +68,8 @@
 #define MMIO_QSP_SPAN    MMIO_REG(0x120)
 #define MMIO_QSP_ZSPAN   MMIO_REG(0x124)
 #define MMIO_QSP_STAT    MMIO_REG(0x13c)
-#define QSP_ID           0x95u
+#define QSP_ID           0x95u       /* Ф3..Ф7 */
+#define QSP_ID_ALIAS     0x96u       /* Ф8: the drawer has the alias spans (ASPAN) */
 #define QSP_ZB           0x3b0000u   /* the z-buffer in the SRAM: 320 x 200 x 16 bit (to 0x3cf3ff) */
 
 /* Quake Ф3е: perspective in the drawer. Per surface (fixed point with a scale per quantity: S = sdivz * 2^ks,

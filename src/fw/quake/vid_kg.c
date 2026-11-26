@@ -53,7 +53,12 @@ void VID_Init(unsigned char *palette)
     vid.numpages = 1;
     vid.colormap = host_colormap;
 #ifdef KG_HWALIAS
-    memcpy((void *)QSP_CMAP, vid.colormap, 64 * 256);   /* Ф8: the colormap of the alias spans of the drawer */
+    {   /* Ф8: the drawer has the alias spans (an older bitstream: the CPU draws them); their colormap in the SRAM */
+        extern int kg_hwalias;
+        kg_hwalias = (MMIO_QSP_STAT >> 24) == QSP_ID_ALIAS;
+        if (kg_hwalias)
+            memcpy((void *)QSP_CMAP, vid.colormap, 64 * 256);
+    }
 #endif
     vid.fullbright = 256 - LittleLong(*((int *)vid.colormap + 2048));
     vid.buffer = vid.conbuffer = (pixel_t *)FB_BASE;

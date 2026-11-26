@@ -33,8 +33,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "r_local.h"
 #include "d_local.h"
 #ifdef KG_HWALIAS
+#ifndef KG_QOPT
+#error "KG_HWALIAS needs KG_QOPT (the CPU path of the older drawers)"
+#endif
 #undef SDRAM_BASE
 #include "mmio.h"
+/* the drawer has the alias spans (STAT ID QSP_ID_ALIAS; vid_kg.c at the start): a bitstream without them (an older
+   board build) gets the CPU path */
+int kg_hwalias;
 /* the skin cache in the SRAM: a copy per skin of the models drawn, from KG_SKIN_BASE on; full: wait for the drawer,
    start again (the table forgets all); D_FlushCaches (a new map: the hunk is reused) forgets all too */
 #define KG_SKIN_N 96
@@ -712,12 +718,17 @@ PQ_FASTTEXT void D_PolysetDrawSpans8 (spanpackage_t *pspanpackage)
 			lcount = 1;	/* karabas bench */
 #endif
 #ifdef KG_HWALIAS
-			MMIO_QSP_APTEX = (unsigned)pspanpackage->ptex;	/* karabas Ф8: the span to the drawer */
-			MMIO_QSP_AST = ((unsigned)pspanpackage->tfrac << 16) | ((unsigned)pspanpackage->sfrac & 0xFFFF);
-			MMIO_QSP_AL = (unsigned)pspanpackage->light;
-			MMIO_QSP_AZI = (unsigned)pspanpackage->zi;
-			MMIO_QSP_ASPAN = ((unsigned)(lcount - 1) << 16) | (((unsigned)pspanpackage->pdest - FB_BASE) & 0xFFFF);
-#elif defined(KG_QOPT)
+			if (kg_hwalias)
+			{
+				MMIO_QSP_APTEX = (unsigned)pspanpackage->ptex;	/* karabas Ф8: the span to the drawer */
+				MMIO_QSP_AST = ((unsigned)pspanpackage->tfrac << 16) | ((unsigned)pspanpackage->sfrac & 0xFFFF);
+				MMIO_QSP_AL = (unsigned)pspanpackage->light;
+				MMIO_QSP_AZI = (unsigned)pspanpackage->zi;
+				MMIO_QSP_ASPAN = ((unsigned)(lcount - 1) << 16) | (((unsigned)pspanpackage->pdest - FB_BASE) & 0xFFFF);
+			}
+			else
+#endif
+#ifdef KG_QOPT
 			{	/* karabas Ф7в: see the top of the file */
 				const byte *restrict cm = CMAP_BRAM_PTR;
 				const byte *restrict tex = pspanpackage->ptex;
@@ -919,11 +930,14 @@ PQ_FASTTEXT void D_RasterizeAliasPolySmooth (void)
 //
 	D_PolysetCalcGradients (r_affinetridesc.skinwidth);
 #ifdef KG_HWALIAS
-	MMIO_QSP_AWHOLE = (unsigned)a_ststepxwhole;	/* karabas Ф8: the triangle of the drawer */
-	MMIO_QSP_AFST = ((unsigned)a_tstepxfrac << 16) | ((unsigned)a_sstepxfrac & 0xFFFF);
-	MMIO_QSP_ALS = (unsigned)r_lstepx;
-	MMIO_QSP_AZS = (unsigned)r_zistepx;
-	MMIO_QSP_AW = (unsigned)r_affinetridesc.skinwidth;
+	if (kg_hwalias)
+	{
+		MMIO_QSP_AWHOLE = (unsigned)a_ststepxwhole;	/* karabas Ф8: the triangle of the drawer */
+		MMIO_QSP_AFST = ((unsigned)a_tstepxfrac << 16) | ((unsigned)a_sstepxfrac & 0xFFFF);
+		MMIO_QSP_ALS = (unsigned)r_lstepx;
+		MMIO_QSP_AZS = (unsigned)r_zistepx;
+		MMIO_QSP_AW = (unsigned)r_affinetridesc.skinwidth;
+	}
 #endif
 
 //
