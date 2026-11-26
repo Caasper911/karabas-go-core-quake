@@ -1,3 +1,4 @@
+/* karabas: copy of PocketQuake src/firmware/quake/d_surf.c (5792fe2) with the drawer waits (KG_SC_SAFE / KG_SC_USE, Ф7в), KG_HWALIAS (Ф8) */
 /*
 Copyright (C) 1996-1997 Id Software, Inc.
 

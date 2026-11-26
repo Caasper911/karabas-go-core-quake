@@ -1,3 +1,4 @@
+/* karabas: copy of PocketQuake src/firmware/quake/r_surf.c (5792fe2) with KG_QOPT and the light per 4 texels (KG_SLIGHT4, Ф7в) */
 /*
 Copyright (C) 1996-1997 Id Software, Inc.
 
