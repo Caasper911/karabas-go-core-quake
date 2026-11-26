@@ -23,10 +23,11 @@ kill_run() {   # the Windows process tree of the run t$1 (make -> xst / map / pa
   echo "DONE killed" >> $B/t$1/build.log
 }
 
-met() {   # the run t$1 ended with its .bin and no timing error
+met() {   # the run t$1 has its whole .bin and no timing error (bitgen's .bgn says it is complete: the 32-bit
+          # bitgen may crash at its exit, and make then never ends; 2026-11-23 Mini t5 met and was killed as silent)
   local d=$B/t$1/src
-  grep -q "^DONE 0" $B/t$1/build.log 2>/dev/null && [ -s $d/karabas_$BD.bin ] &&
-    grep -q "Timing Score: 0 " $B/t$1/build.log 2>/dev/null
+  [ -s $d/karabas_$BD.bin ] && grep -q "Bitstream generation is complete" $d/karabas_$BD.bgn 2>/dev/null &&
+    grep -q "Timing Score: 0 " $d/karabas_$BD.par 2>/dev/null
 }
 
 for t in "$@"; do
@@ -48,7 +49,8 @@ while true; do
   left=0
   for t in "$@"; do
     l=$B/t$t/build.log
-    grep -q "^DONE" $l 2>/dev/null && { met $t && [ -z "$win" ] && win=$t; continue; }
+    met $t && { [ -z "$win" ] && win=$t; continue; }
+    grep -q "^DONE" $l 2>/dev/null && continue
     left=1
     now=$(date +%s)
     if [ $(( now - $(stat -c %Y $l) )) -gt $SILENT ]; then echo "t$t: silent for $SILENT s, stopped"; kill_run $t; fi
@@ -60,6 +62,15 @@ while true; do
   fi
   [ $left = 0 ] && break
 done
+
+# the end: no ISE tool of this board may stay (2026-11-23: a losing Go PAR outlived its killed tree, its parent
+# had exited, and ran on beside the next board): every par / map / trce / bitgen / ngdbuild with karabas_$BD in its
+# command line is killed (all runs of the board are over here)
+sweep() {
+  wmic process where "commandline like '%karabas_$BD%' and (name='par.exe' or name='map.exe' or name='trce.exe' or name='bitgen.exe' or name='ngdbuild.exe')" get processid 2>/dev/null |
+    grep -oE '[0-9]+' | while read w; do taskkill //F //T //PID $w > /dev/null 2>&1 && echo "swept a leftover ISE process $w"; done
+}
+sweep
 
 for t in "$@"; do
   d=$B/t$t/src

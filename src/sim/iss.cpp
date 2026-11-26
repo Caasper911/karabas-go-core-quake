@@ -7,7 +7,7 @@
 //
 // Quake Ф0: RV32F (FF,<frame>,... per frame and an FP line at the end), the PocketQuake debug VRAM / sysreg
 // (0x2xxxxxxx / 0x4xxxxxxx: writes dropped, reads 0, 0x40000004 = cycles; "pocket-io" at the end).
-// usage: iss <fw.bin> --org 0x10000000 [--wad file] [--max Minstr] [--icache B] [--dcache B]
+// usage: iss <fw.bin> --org 0x10000000 [--wad file] [--max Minstr] [--icache B] [--dcache B] [--iways N] [--dways N]
 //            [--prof file: pc + ra every 256 instr] [--prof-from F]
 //            [--dump-at F file: after frame F write SRAM + SDRAM (36 MB) with a resume stub at 0x11fff000]
 //            [--resume file: start from such a dump (registers from it, cold caches), fw.bin ignored]
@@ -16,6 +16,8 @@
 //            [--opl-log file: "us reg value" of the OPL writes] [--midi-log file: "us byte"]
 //            Ф3: [--sd file: the 1 MB save file of doom_sd (made if absent)] [--keys F:U,F:U...: at frame F the
 //            USB key U is down (0: all up)]
+//            Ф1б: [--pak0 file] [--pak1 file]: the images of the F items PAK0 / PAK1 (doom_sd slots 2 / 3,
+//            read by sectors); without --wad the firmware reads pak0 from there
 //            Timer: US = instructions / 32 (~ CPI 2.4 at 75 MHz); the timer interrupt and the CSRs
 //            mstatus / mie / mtvec / mepc / mcause / mtval / mip, mret.
 //            [--shot F file.ppm: the frame F (FB 0x3f0000 + palette) as a PPM, repeatable]
@@ -39,17 +41,21 @@ static inline uint8_t *host(uint32_t a, int &reg) {
     reg = -1; return nullptr;
 }
 
+// ways > 1 (Quake Ф6 study): set = line % (lines / ways); a refill goes to the way of one round-robin pointer
+// for all sets (VexRiscv waysAllocator)
 struct Cache {
-    uint32_t lines = 0;
+    uint32_t lines = 0, ways = 1, sets = 0, rr = 0;
     std::vector<uint32_t> tag;
-    void init(uint32_t bytes) { lines = bytes / 32; tag.assign(lines ? lines : 1, 0xffffffffu); }
+    void init(uint32_t bytes, uint32_t w = 1) {
+        lines = bytes / 32; ways = w ? w : 1; sets = lines / ways; tag.assign(lines ? lines : 1, 0xffffffffu);
+    }
     bool miss(uint32_t a) {
         if (!lines) return true;
-        uint32_t l = a >> 5, i = l % lines;
-        if (tag[i] != l) { tag[i] = l; return true; }
-        return false;
+        uint32_t l = a >> 5, b = (l % sets) * ways;
+        for (uint32_t j = 0; j < ways; j++) if (tag[b + j] == l) return false;
+        tag[b + rr] = l; rr = (rr + 1) % ways;
+        return true;
     }
-    bool hit(uint32_t a) const { return lines && tag[(a >> 5) % lines] == (a >> 5); }
 };
 
 static uint64_t misaligned = 0;
@@ -123,7 +129,7 @@ int main(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IOLBF, 1 << 16);   // Quake Ф0: progress visible in the log during long runs
     if (argc < 2) { fprintf(stderr, "usage: %s fw.bin --org A [--wad f] [--max Minstr] [--icache B] [--dcache B] [--prof f] [--prof-from F]\n", argv[0]); return 2; }
     uint64_t max_instr = 20000ull * 1000 * 1000;
-    uint32_t icb = 32768, dcb = 32768, org = SDRAM_BASE;
+    uint32_t icb = 32768, dcb = 32768, org = SDRAM_BASE, iways = 1, dways = 1;
     const char *wad = 0;
     FILE *prof = 0;
     bool sampling = true;
@@ -143,6 +149,11 @@ int main(int argc, char **argv) {
     uint8_t sdbuf[512] = {0};
     uint32_t sd_sector = 0, kbd0 = 0, kbdn = 0;
     bool sd_mounted = false;
+    const char *pak_path[2] = { 0, 0 };
+    FILE *pak_f[2] = { 0, 0 };
+    uint32_t pak_size[2] = { 0, 0 };
+    uint32_t sd_stat = 0;               // bit 1: the last command failed
+    uint64_t pak_sectors = 0;
     std::vector<std::pair<int, int>> keys;
     std::vector<std::pair<int, std::string>> shots;
     uint32_t pal[256] = {0};
@@ -150,6 +161,8 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--max")) max_instr = strtoull(argv[++i], 0, 10) * 1000000ull;
         else if (!strcmp(argv[i], "--icache")) icb = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--dcache")) dcb = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--iways")) iways = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--dways")) dways = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--org")) org = strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--wad")) wad = argv[++i];
         else if (!strcmp(argv[i], "--prof")) prof = fopen(argv[++i], "w");
@@ -160,6 +173,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--music")) music = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--fps")) fps_sw = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--sd")) sd_path = argv[++i];
+        else if (!strcmp(argv[i], "--pak0")) pak_path[0] = argv[++i];
+        else if (!strcmp(argv[i], "--pak1")) pak_path[1] = argv[++i];
         else if (!strcmp(argv[i], "--keys")) {
             char *k = argv[++i];
             while (*k) { int f = strtol(k, &k, 10); if (*k == ':') k++; int u = strtol(k, &k, 0); keys.push_back({f, u}); if (*k == ',') k++; }
@@ -193,11 +208,16 @@ int main(int argc, char **argv) {
         fclose(w);
     }
     fprintf(stderr, "loaded %zu bytes at %08x, WAD %u bytes, I$ %u D$ %u\n", n, org, wad_size, icb, dcb);
+    for (int k = 0; k < 2; k++) if (pak_path[k]) {
+        pak_f[k] = fopen(pak_path[k], "rb");
+        if (!pak_f[k]) { perror(pak_path[k]); return 2; }
+        fseek(pak_f[k], 0, SEEK_END); pak_size[k] = (uint32_t)ftell(pak_f[k]);
+    }
     if (sd_path) {
         sdf.assign(1u << 20, 0);
         if (FILE *q = fopen(sd_path, "rb")) { size_t r = fread(sdf.data(), 1, sdf.size(), q); (void)r; fclose(q); }
     }
-    Cache ic, dc; ic.init(icb); dc.init(dcb);
+    Cache ic, dc; ic.init(icb, iways); dc.init(dcb, dways);
 
     uint32_t x[32] = {0}, pc = org;
     const uint32_t RES = 0x11fff000; // resume area (the last 4 KB of the SDRAM: the CPU fetches from the SDRAM only): stub, registers at +0x100, pc at +0x180
@@ -238,8 +258,10 @@ int main(int argc, char **argv) {
             case 0x70: return (uint32_t)((ninstr / 32) * 11025 / 1000000) & 2047;
             case 0x28: return kbd0;
             case 0x30: return kbdn;
-            case 0x88: return sd_mounted ? 4u : 0u;
+            case 0x88: return (sd_mounted ? 4u : 0u) | (pak_size[0] ? 8u : 0u) | (pak_size[1] ? 16u : 0u) | sd_stat;
             case 0x8c: return sd_mounted ? (uint32_t)sdf.size() : 0u;
+            case 0x94: return pak_size[0];
+            case 0x98: return pak_size[1];
             case 0x20: return wad_size;
             }
             return 0;
@@ -276,7 +298,19 @@ int main(int argc, char **argv) {
             if (o >= 0x1000 && o < 0x1800) { sdbuf[(o - 0x1000) >> 2] = v & 0xff; return; }
             if (o == 0x80) { sd_sector = v; return; }
             if (o == 0x90) { sd_mounted = sd_path != 0; return; }
+            if (o == 0x84 && ((v >> 4) & 7) >= 2 && ((v >> 4) & 7) <= 3) {   // Ф1б: a pak sector
+                int k = ((v >> 4) & 7) - 2;
+                sd_stat = 2;
+                if (pak_f[k] && (v & 3) == 1 && sd_sector < (pak_size[k] + 511) / 512) {
+                    memset(sdbuf, 0, 512);
+                    fseek(pak_f[k], (long)sd_sector * 512, SEEK_SET);
+                    size_t r = fread(sdbuf, 1, 512, pak_f[k]); (void)r;
+                    sd_stat = 0; pak_sectors++;
+                }
+                return;
+            }
             if (o == 0x84 && sd_mounted && sd_sector < sdf.size() / 512) {
+                sd_stat = 0;
                 if (v & 1) memcpy(sdbuf, &sdf[sd_sector * 512], 512);
                 if (v & 2) memcpy(&sdf[sd_sector * 512], sdbuf, 512);
                 return;
@@ -562,6 +596,7 @@ int main(int argc, char **argv) {
         fclose(wavf);
     }
     if (oplf) fclose(oplf);
+    if (pak_sectors) fprintf(stderr, "pak sectors read: %llu\n", (unsigned long long)pak_sectors);
     if (sd_path) { FILE *q = fopen(sd_path, "wb"); fwrite(sdf.data(), 1, sdf.size(), q); fclose(q); }
     if (midif) fclose(midif);
     tot.instr = ninstr;

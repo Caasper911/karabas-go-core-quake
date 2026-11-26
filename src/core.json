@@ -1,7 +1,7 @@
 {
     "id": "quake",
     "name": "Quake",
-    "build": "26112301",
+    "build": "26112303",
     "visible": true,
     "type": "osd",
     "order": 33,
@@ -16,29 +16,36 @@
     "boards": {
         "go": {
             "link": 2,
-            "build": "26112205",
+            "build": "26112303",
             "bitstream": "karabas_go.bin"
         },
         "mini": {
             "link": 2,
-            "build": "26112205",
+            "build": "26112303",
             "bitstream": "karabas_mini.bin"
         },
         "minig": {
             "link": 2,
-            "build": "26112301",
+            "build": "26112302",
             "bitstream": "karabas_minig.bin"
         }
     },
     "osd": [
         {
-            "type": "FL",
-            "name": "PAK",
-            "slot": 0,
+            "type": "F",
+            "name": "PAK0",
+            "slot": 2,
             "extensions": ".pak",
             "dir": "/quake",
-            "hotkey": "Menu+F1",
-            "autoload": true
+            "hotkey": "Menu+F1"
+        },
+        {
+            "type": "F",
+            "name": "PAK1",
+            "slot": 3,
+            "extensions": ".pak",
+            "dir": "/quake",
+            "hotkey": "Menu+F2"
         },
         {
             "type": "-"

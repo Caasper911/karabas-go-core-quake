@@ -12,17 +12,23 @@
 
  MMIO word registers (offsets of doom_soc):
    0x80 W  SECTOR  the sector of the next command
-   0x84 W  CMD     1: read the sector into the buffer, 2: write the buffer to the sector
-   0x88 R  STAT    bit 0 busy, bit 1 the last command failed, bit 2 mounted (a file of size > 0)
+   0x84 W  CMD     1: read the sector into the buffer, 2: write the buffer to the sector; bits 6..4: the image
+                   slot (0: SLOT, the save file; Quake Ф1б: PAK_SLOT, PAK_SLOT + 1 = the F items of the paks,
+                   read only: a write there is not done)
+   0x88 R  STAT    bit 0 busy, bit 1 the last command failed, bit 2 mounted (a file of size > 0), bits 3 / 4:
+                   PAK_SLOT / PAK_SLOT + 1 mounted
    0x8c R  SIZE    the size of the mounted file in bytes (low 32 bits)
    0x90 W  BK_REQ  ask for the save file: the value = its size in sectors
+   0x94 R  SIZE2   the size of the image of PAK_SLOT (low 32 bits), 0x98 R SIZE3: of PAK_SLOT + 1 (kept over
+                   a reset of the core: the MCU tells a mount once)
    0x1000 + 4 * i  R/W  byte i of the 512-byte sector buffer (bits 7..0)
  The buffer: 512 x 8 distributed dual-port RAM: port A writes (the CPU, or the bytes of a read
  from the MCU) and reads for the CPU, port B reads the byte of a write for the MCU (two clocks
  after sdc_byte_addr: with the address register of kg_l2_img that is kg_mcu2 IMG_OUT_LATENCY 3).
 */
 module doom_sd #(
-	parameter [2:0] SLOT = 3'd1
+	parameter [2:0] SLOT = 3'd1,
+	parameter [2:0] PAK_SLOT = 3'd2
 ) (
 	input wire clk,
 	input wire reset,
@@ -58,7 +64,8 @@ module doom_sd #(
 assign bk_kind = 8'd0;
 assign bk_result = 8'h01;                 // done: nothing is held back
 
-wire mine = sdc_slot == SLOT;
+reg [2:0] cur = SLOT;                     // the slot of the command in progress
+wire mine = sdc_slot == cur;
 assign dbg = { rd_req, wr_req, busy, wait_done, err, size != 64'd0, sdc_busy, mine };
 wire buf_sel = io_off[13:11] == 3'b010;   // 0x1000..0x17ff
 
@@ -67,10 +74,15 @@ reg [31:0] sector = 32'd0;
 reg rd_req = 1'b0, wr_req = 1'b0;
 reg busy = 1'b0, wait_done = 1'b0, err = 1'b0;
 reg [63:0] size = 64'd0;
+reg [31:0] size2 = 32'd0, size3 = 32'd0;  // the paks
 reg flush_pend = 1'b0;
+// the slot of a command: 0 = SLOT; its size (a command needs a mounted file)
+wire [2:0] c_slot = io_wd[6:4] == 3'd0 ? SLOT : io_wd[6:4];
+wire c_ok = c_slot == SLOT ? size != 64'd0 :
+            (c_slot == PAK_SLOT ? size2 != 32'd0 : c_slot == PAK_SLOT + 3'd1 ? size3 != 32'd0 : 1'b0) && !io_wd[1];
 
-assign sdc_rd = { 7'd0, rd_req } << SLOT;
-assign sdc_wr = { 7'd0, wr_req } << SLOT;
+assign sdc_rd = { 7'd0, rd_req } << cur;
+assign sdc_wr = { 7'd0, wr_req } << cur;
 assign sdc_sector = sector;
 
 // port A (write and an asynchronous read): a byte of a read from the MCU, else the CPU (it reads and
@@ -96,8 +108,10 @@ end
 always @(*) begin
 	if (buf_sel) io_rd = { 24'd0, a_q };
 	else case (io_off)
-		14'h0088: io_rd = { 29'd0, size != 64'd0, err, busy };
+		14'h0088: io_rd = { 27'd0, size3 != 32'd0, size2 != 32'd0, size != 64'd0, err, busy };
 		14'h008c: io_rd = size[31:0];
+		14'h0094: io_rd = size2;
+		14'h0098: io_rd = size3;
 		default: io_rd = 32'd0;
 	endcase
 end
@@ -107,6 +121,8 @@ always @(posedge clk) begin
 	bk_flushed <= 1'b0;
 	if (img_flush[SLOT]) flush_pend <= 1'b1;
 	if (sdc_img_mounted[SLOT]) size <= sdc_img_size;
+	if (sdc_img_mounted[PAK_SLOT]) size2 <= sdc_img_size[63:32] != 32'd0 ? 32'hffffffff : sdc_img_size[31:0];
+	if (sdc_img_mounted[PAK_SLOT + 3'd1]) size3 <= sdc_img_size[63:32] != 32'd0 ? 32'hffffffff : sdc_img_size[31:0];
 	if (reset) begin
 		busy <= 1'b0;
 		wait_done <= 1'b0;
@@ -120,7 +136,8 @@ always @(posedge clk) begin
 			bk_size <= io_wd;
 			bk_mount <= 1'b1;
 		end
-		if (io_we && io_off == 14'h0084 && !busy && size != 64'd0) begin
+		if (io_we && io_off == 14'h0084 && !busy && c_ok) begin
+			cur <= c_slot;
 			busy <= 1'b1;
 			wait_done <= 1'b0;
 			err <= 1'b0;

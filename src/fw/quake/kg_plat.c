@@ -49,15 +49,16 @@ int dataslot_open_file(uint16_t slot_id, const char *filename, uint32_t flags, u
 }
 unsigned char kg_dma_buffer[DMA_CHUNK_SIZE] __attribute__((aligned(32)));
 
+/* data slots 1 / 2 of libc/file.c = id1/pak0.pak / pak1.pak (Ф1б: kg_pak.c) */
 #define PAK0_SLOT_ID 1
+uint32_t kg_pak_size(int k);
+int kg_pak_read(int k, uint32_t off, void *dest, uint32_t len);
 
 int dataslot_read(uint32_t slot_id, uint32_t offset, void *dest, uint32_t length)
 {
-    uint32_t size = MMIO_WADSIZE;
-    if (slot_id != PAK0_SLOT_ID || size < 12 || offset > size || length > size - offset)
+    if (slot_id != PAK0_SLOT_ID && slot_id != PAK0_SLOT_ID + 1)
         return -1;
-    memcpy(dest, (const void *)(WAD_BASE + offset), length);
-    return 0;
+    return kg_pak_read((int)slot_id - PAK0_SLOT_ID, offset, dest, length);
 }
 #ifndef KG_HW   /* the board: kg_qsave.c (the save file) */
 int dataslot_write(uint16_t slot_id, uint32_t offset, const void *src, uint32_t length)
@@ -73,7 +74,7 @@ int32_t dataslot_load(uint16_t slot_id, void *dest, uint32_t max_length)
 }
 int dataslot_get_size(uint16_t slot_id, uint32_t *size_out)
 {
-    *size_out = slot_id == PAK0_SLOT_ID ? MMIO_WADSIZE : 0;
+    *size_out = slot_id == PAK0_SLOT_ID || slot_id == PAK0_SLOT_ID + 1 ? kg_pak_size((int)slot_id - PAK0_SLOT_ID) : 0;
     return *size_out ? 0 : -1;
 }
 

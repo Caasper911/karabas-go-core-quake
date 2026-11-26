@@ -45,9 +45,9 @@ endif
 JSON = core.json
 
 # map / par options (cost table 2 by default, the rule of all the cores)
-MAP_T_go ?= 4   # Ф4 (quake_span, 89 % slices): 4 met (26112205); 2 fought the timing for an hour
-MAP_T_mini ?= 5   # Ф4 (quake_span, 93 % slices): 5 met (26112205); 4 missed 0.249 ns (HDMI enc -> serializer), 3 MAP segfault
-MAP_T_minig ?= 5   # Ф5 (quake_span smaller, LUT 70 %): 5 met (26112301), 4 MAP segfault (also with -mt off); Ф3е-б: 4 met (26112203)
+MAP_T_go ?= 5   # Ф1б (doom_sd pak slots): 5 met (26112303, 12.245 ns); 2 missed; Ф4: 4 met (26112205)
+MAP_T_mini ?= 5   # Ф1б: 5 met (26112303, 12.222 ns; bitgen crashed at its exit), 2 missed; Ф4: 5 met (26112205)
+MAP_T_minig ?= 8   # Ф1б (doom_sd pak slots): 8 met (26112302); 2 missed 0.37 ns (kg_mcu2 img), 5 hung, 6 missed, 3 / 7 MAP segfault; Ф5: 5 met (26112301)
 MAP_MT ?= 2
 MAP = -logic_opt off -ol high -xe n -xt 3 -register_duplication off -r 4 -global_opt off -mt $(MAP_MT) -detail -ir off -pr b -lc auto -power off
 PAR = -ol high -xe c -mt 4

@@ -20,7 +20,7 @@ Doom history below). Follow the phases; record a changed decision in PLAN.md.
 The main open question is floating point: Quake is float everywhere, the CPU and the ISS (`src/sim/iss.cpp`) are
 rv32im. Ф0 measures soft-float in the ISS and decides between soft-float, a VexRiscv FPU (RV32F) and fixed point.
 
-No game data in git or in the .kg: the user loads `pak0.pak` from SD (OSD file item "PAK", dir `/quake`; test copy
+No game data in git or in the .kg: the user picks `pak0.pak` (and `pak1.pak`) on the SD card (Ф1б: OSD `F` items PAK0 / PAK1, image slots 2 / 3, dir `/quake`, read by sectors through doom_sd + `src/fw/quake/kg_pak.c`; test copy
 `~/Downloads/quake-sw/game/ID1/PAK0.PAK`, shareware 1.06).
 
 State (Ф4, branch `f4-boards`; Ф0..Ф4 done, all boards ok): all boards = `VexRiscv_FPU` (32K / 32K + FpuPlugin), `doom_soc` WITH_DRAW 0,
