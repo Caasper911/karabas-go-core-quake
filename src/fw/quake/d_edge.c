@@ -409,8 +409,24 @@ static void kg_diag_hex (char *o, unsigned v, int n)
 }
 #endif
 
+/* karabas Ф7в, the build budget of the surface cache: the surface pixels built in this frame (d_surf.c); over the
+   budget a world face not in the cache at its mip takes a coarser one (a cached one up to 2 levels up, else 2
+   levels up): 1/4..1/16 of the work, built at its mip in a later frame (a turn: new faces blurred for a while,
+   the frame rate holds). The board: OSD "Fast turn" (MMIO_SW 15..8: 0 Off, 1 100000, 2 50000, 3 25000); the
+   bench: QX=-DKG_SCBUDGET=<pixels> (none: off) */
+int kg_sc_built, kg_sc_budget;
+
 void kg_poly_begin (void)
 {
+	kg_sc_built = 0;
+#ifdef KG_HW
+	{
+		unsigned v = (MMIO_SW >> 8) & 0xff;
+		kg_sc_budget = v == 1 ? 100000 : v == 2 ? 50000 : v == 3 ? 25000 : 0;
+	}
+#elif defined(KG_SCBUDGET)
+	kg_sc_budget = KG_SCBUDGET;
+#endif
 #ifdef KG_POLYDIAG
 	{
 		volatile unsigned *m = (volatile unsigned *)(SRAM_UC + QSP_MASK);
@@ -680,6 +696,13 @@ void D_DrawPoly (void)
 				zg->frame = r_framecount;
 			}
 			miplevel = D_MipLevelForScale (r_polydesc.nearzi * scale_for_mip * pface->texinfo->mipadjust);
+			if (kg_sc_budget && kg_sc_built > kg_sc_budget && !pface->cachespots[miplevel])
+			{
+				int m = miplevel + 1;
+				while (m < 3 && m < miplevel + 2 && !pface->cachespots[m])
+					m++;
+				miplevel = m > 3 ? 3 : m;
+			}
 			tg = &kg_tg[ti][miplevel];
 			if (tg->frame != r_framecount)
 			{

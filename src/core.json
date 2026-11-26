@@ -82,6 +82,18 @@
             "index": 5
         },
         {
+            "type": "S",
+            "name": "Fast turn",
+            "options": [
+                "Off",
+                "100K",
+                "50K",
+                "25K"
+            ],
+            "default": 1,
+            "index": 1
+        },
+        {
             "type": "-"
         },
         {

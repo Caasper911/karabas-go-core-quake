@@ -21,7 +21,7 @@
 #define MMIO_US       MMIO_REG(0x40)  /* read: microseconds since reset */
 #define MMIO_TCMP     MMIO_REG(0x44)  /* write: the timer interrupt when US - TCMP >= 0 (and TEN) */
 #define MMIO_TEN      MMIO_REG(0x48)  /* write: bit 0 enables the timer interrupt */
-#define MMIO_SW       MMIO_REG(0x50)  /* read: OSD switches; bits 15..8 = Music (0 OPL3, 1 MIDI, 2 off) */
+#define MMIO_SW       MMIO_REG(0x50)  /* read: OSD switches; bits 15..8 = Music (0 OPL3, 1 MIDI, 2 off; Quake: Fast turn) */
 #define MMIO_OPL_ADDR MMIO_REG(0x60)  /* write: { bank, register } */
 #define MMIO_OPL_DATA MMIO_REG(0x64)  /* write: the value */
 #define MMIO_MIDI     MMIO_REG(0x68)  /* write: a MIDI byte */

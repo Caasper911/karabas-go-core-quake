@@ -23,7 +23,7 @@ static short zbuffer_storage[BASEWIDTH * BASEHEIGHT] __attribute__((aligned(32))
 #endif
 unsigned short d_8to16table[256];
 unsigned d_8to24table[256];
-static unsigned int vid_frame;
+unsigned int vid_frame;   /* karabas: also the start of KG_SPIN (sys_kg.c) */
 
 void VID_SetPalette(unsigned char *palette)
 {

@@ -374,7 +374,7 @@ QCFLAGS := $(QMARCH) -O3 -flto -g -std=gnu11 -fcommon -ffreestanding -nostdlib -
            -Wno-error=int-conversion -Wno-error=return-mismatch \
            -DPOCKET_QUAKE -DPOCKET_LINK_ENABLE=0 -DKG_QUAKE $(QDEFS) -I$(QT)/quake -I$(QT)/libc -I. $(QX)
 QRFLAGS := -ffast-math -fno-math-errno -fno-trapping-math
-QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/d_edge.c quake/r_sky.c quake/r_alias.c quake/kg_hwspan.h
+QOVER   := quake/sys_kg.c quake/vid_kg.c quake/snd_kg.c quake/in_kg.c quake/sram_fill_accel.h quake/d_scan.c quake/r_draw.c quake/d_edge.c quake/r_sky.c quake/r_alias.c quake/d_surf.c quake/kg_hwspan.h
 QOVERT  := quake/kg_plat.c quake/kg_pak.c quake/kg_qhw.c quake/kg_qsave.c quake/dataslot.h kg_save_fs.c kg_lz.c
 QOPTS   := $(QB)/opts-$(shell printf "%s" "$(if $(HW),$(QHWARGS),$(QARGS))" | md5sum | cut -c1-12)
 
@@ -395,10 +395,6 @@ $(QT)/.stamp: $(QOVER) $(QOVERT) $(wildcard $(QSRC)/quake/*.[ch] $(QSRC)/libc/*.
 	# karabas: the save / config region of their libc in our SRAM (theirs is beyond our 32 MB SDRAM)
 	sed -i 's|^#define SAV_REGION_BASE  0x13C00000|#define SAV_REGION_BASE  0x00200000 /* karabas: SRAM */|' $(QT)/libc/file.c
 	grep -q 'SAV_REGION_BASE  0x00200000' $(QT)/libc/file.c
-	# karabas Ф3: before a surface is (re)built (D_SCAlloc / R_DrawSurface may overwrite a surface the span drawer
-	# still has queued) wait until the drawer is idle (KG_HWSPAN; kg_plat.c)
-	sed -i '/^\tsurfscale = 1.0f \/ (float)(1<<miplevel);/i #ifdef KG_HWSPAN\n\t{ extern void kg_span_idle(void); kg_span_idle(); }   /* karabas */\n#endif' $(QT)/quake/d_surf.c
-	grep -q 'kg_span_idle(); }   /\* karabas' $(QT)/quake/d_surf.c
 	# karabas Ф7: S_ClearBuffer silences the SFX ring of doom_audio too (snd_kg.c kg_snd_clear): the looped leftovers
 	# rattled during a load
 	sed -i 's|^    memset(shm->buffer, clear, shm->samples \* shm->samplebits / 8);|&\n    { extern void kg_snd_clear(void); kg_snd_clear(); }   /* karabas */|' $(QT)/quake/snd_dma.c
