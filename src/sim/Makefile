@@ -32,12 +32,15 @@ obj_rtl/tb_rtl: tb_rtl.cpp $(RTL)
 # frame hashes against obj_VexRiscv_FPU/tb_soc on the same dump (make CPU=VexRiscv_FPU obj_VexRiscv_FPU/tb_soc)
 # Ф3: QSPAN=1 (default) with quake_span (WITH_QSPAN); QSPAN=0 the SoC of Ф1
 QSPAN ?= 1
-RTL_Q := ../rtl/doom_soc.v ../rtl/doom_sdram.v ../rtl/doom_sram.v ../rtl/doom_draw.v ../rtl/quake_span.v ../rtl/vexriscv/VexRiscv_FPU.v
-obj_rtl_q/tb_rtl: tb_rtl.cpp $(RTL_Q)
+# Ф6: CPU_V = another CPU file (cache variants), QOBJ = its object dir (e.g. QOBJ=obj_rtl_q_i2d2)
+CPU_V ?= ../rtl/vexriscv/VexRiscv_FPU.v
+QOBJ ?= obj_rtl_q
+RTL_Q := ../rtl/doom_soc.v ../rtl/doom_sdram.v ../rtl/doom_sram.v ../rtl/doom_draw.v ../rtl/quake_span.v $(CPU_V)
+$(QOBJ)/tb_rtl: tb_rtl.cpp $(RTL_Q)
 	verilator --cc --exe --build -j 8 -O3 -Wno-fatal -Wno-lint -Wno-style \
 	  --top-module doom_soc -GSDRAM_INIT_CLOCKS=100 -GRESET_VECTOR=32\'h11fff000 -GWITH_DRAW=0 -GWITH_QSPAN=$(QSPAN) \
-	  -GCLK_NUM=10\'d875 -GCLK_DEN=10\'d11 -Mdir obj_rtl_q -o tb_rtl \
-	  -CFLAGS "-O2 -DKG_QUAKE" -MAKEFLAGS "OPT_FAST=-O3 OPT_SLOW=-O1" $(RTL_Q) tb_rtl.cpp >obj_rtl_q.log 2>&1 || { tail -20 obj_rtl_q.log; exit 1; }
+	  -GCLK_NUM=10\'d875 -GCLK_DEN=10\'d11 -Mdir $(QOBJ) -o tb_rtl \
+	  -CFLAGS "-O2 -DKG_QUAKE" -MAKEFLAGS "OPT_FAST=-O3 OPT_SLOW=-O1" $(RTL_Q) tb_rtl.cpp >$(QOBJ).log 2>&1 || { tail -20 $(QOBJ).log; exit 1; }
 
 clean:
 	rm -rf iss obj_* obj_*.log

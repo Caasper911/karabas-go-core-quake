@@ -1,7 +1,7 @@
 {
     "id": "quake",
     "name": "Quake",
-    "build": "26112303",
+    "build": "26112304",
     "visible": true,
     "type": "osd",
     "order": 33,
@@ -26,7 +26,7 @@
         },
         "minig": {
             "link": 2,
-            "build": "26112302",
+            "build": "26112304",
             "bitstream": "karabas_minig.bin"
         }
     },

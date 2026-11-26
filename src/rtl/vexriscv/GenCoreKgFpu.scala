@@ -1,5 +1,5 @@
 // karabas: GenCoreDefault of litex pythondata-cpu-vexriscv 642ecfe + option --fpu (FpuPlugin, RV32F)
-// (made by mk_genfpu.py; see src/rtl/vexriscv/README.md)
+// (made by mk_genfpu.py; see src/rtl/vexriscv/README.md); Quake Ф6: options --iCacheWays / --dCacheWays
 package vexriscv.kg
 
 import vexriscv._
@@ -32,6 +32,8 @@ case class ArgConfig(
   hardwareBreakpointCount : Int = 0,
   iCacheSize : Int = 4096,
   dCacheSize : Int = 4096,
+  iCacheWays : Int = 1,
+  dCacheWays : Int = 1,
   pmpRegions : Int = 0,
   pmpGranularity : Int = 256,
   pmpAddressMatchingModes : String = "na4,napot,tor",
@@ -78,6 +80,8 @@ object GenCoreKgFpu{
       opt[Int]("pmpGranularity")    action { (v, c) => c.copy(pmpGranularity = v)   } text("Granularity of PMP regions (in bytes)")
       opt[String]("pmpAddressMatchingModes")    action { (v, c) => c.copy(pmpAddressMatchingModes = v)   } text("Which PMP address matching modes to support (comma-separated, out of [NA4, NAPOT, TOR])")
       opt[Boolean]("fpuAsyncRf")    action { (v, c) => c.copy(fpuAsyncRf = v)   } text("FpuParameter asyncRegFile")
+      opt[Int]("iCacheWays")     action { (v, c) => c.copy(iCacheWays = v) } text("Ways of the instruction cache (lines per way: a power of 2)")
+      opt[Int]("dCacheWays")     action { (v, c) => c.copy(dCacheWays = v) } text("Ways of the data cache (lines per way: a power of 2)")
       opt[Boolean]("fpu")    action { (v, c) => c.copy(fpu = v)   } text("set RV32IMF (FpuPlugin, single)")
       opt[Boolean]("mulDiv")    action { (v, c) => c.copy(mulDiv = v)   } text("set RV32IM")
       opt[Boolean]("cfu")       action { (v, c) => c.copy(cfu = v)   } text("If true, add custom function unit interface")
@@ -124,7 +128,7 @@ object GenCoreKgFpu{
             config = InstructionCacheConfig(
               cacheSize = argConfig.iCacheSize,
               bytePerLine = 32,
-              wayCount = if(linux) ((argConfig.iCacheSize + 4095) / 4096) else 1,
+              wayCount = if(linux) ((argConfig.iCacheSize + 4095) / 4096) else argConfig.iCacheWays,
               addressWidth = 32,
               cpuDataWidth = 32,
               memDataWidth = 32,
@@ -153,7 +157,7 @@ object GenCoreKgFpu{
             config = new DataCacheConfig(
               cacheSize = argConfig.dCacheSize,
               bytePerLine = 32,
-              wayCount = if(linux) ((argConfig.dCacheSize + 4095) / 4096) else 1,
+              wayCount = if(linux) ((argConfig.dCacheSize + 4095) / 4096) else argConfig.dCacheWays,
               addressWidth = 32,
               cpuDataWidth = 32,
               memDataWidth = 32,
