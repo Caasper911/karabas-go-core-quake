@@ -22,13 +22,16 @@
  busy: work queued or running (doom_soc: the CPU waits for the frame / z-buffer SRAM and the frame copy).
 
  The math part takes the commands. A z span goes to the pixel part as one descriptor. A perspective span: S, T,
- Z at (u, v) (three 32 x 10 multiplies), then s, t at the span start and at the far end of each 16-pixel
+ Z at (u, v) (origin * 1 + grad_u * u + grad_v * v through the one multiplier, summed per value), then s, t at the span start and at the far end of each 16-pixel
  segment (the last one: of its last pixel): Z = m * 2^(e - 23), r = floor(2^47 / m) (a 25-step divider),
  q = sat32((S * r) >> (ks - kz + 8 + e)) (a left shift for a negative amount), s = q + sadjust clamped as d_scan.c
  (the upper bound first); the steps (>> 4, or the reciprocal table on the last segment); one descriptor per
  segment. The pixel part draws a descriptor while the math part works on the next one: per pixel the texel
  (a halfword read unless it is the halfword read last), the pixel (two neighbours of a span in one halfword
  write), the z halfword (Z >> (kz - 15), or izi >> 16 of a z span).
+ Ф5 (area): the surface registers 16..29 are a distributed RAM (one write port, one read port for the math part);
+ ks / kt / kz are kept in registers too. The per-segment S, T, Z steps (grad_u * 16, or * (seg - 1)) go through
+ the multiplier as well.
 */
 module quake_span #(
 	parameter [21:0] FB = 22'h3f0000,     // the work frame (byte address in the SRAM)
@@ -58,9 +61,15 @@ module quake_span #(
 reg [21:0] tex = 22'd0;
 reg [11:0] tw = 12'd0;
 reg [31:0] r_izi = 32'd0, r_izs = 32'd0;
-reg signed [31:0] so = 0, su = 0, sv = 0, to = 0, tu = 0, tv = 0, zo = 0, zu = 0, zv = 0;
 reg signed [7:0] ks = 0, kt = 0, kz = 0;
-reg signed [31:0] sadj = 0, tadj = 0, bbs = 0, bbt = 0;
+// the surface registers 16..29 (index io_off - 16): a distributed RAM, read by the math part (pr_ra below)
+localparam [3:0] R_ZU = 4'd7, R_SADJ = 4'd10, R_TADJ = 4'd11, R_BBS = 4'd12, R_BBT = 4'd13;
+reg [31:0] pr_mem [0:15];
+reg [3:0] pr_ra;
+wire [31:0] pr_rd = pr_mem[pr_ra];
+always @(posedge clk) begin
+	if (io_we && io_off[4] && io_off[3:0] <= 4'd13) pr_mem[io_off[3:0]] <= io_wd;
+end
 
 wire is_push = io_off == 5'd9 || io_off == 5'd30;
 wire is_param = io_off == 5'd0 || io_off == 5'd1 || (io_off >= 5'd16 && io_off <= 5'd29);
@@ -71,20 +80,7 @@ always @(posedge clk) begin
 		5'd1: tw <= io_wd[11:0];
 		5'd6: r_izi <= io_wd;
 		5'd7: r_izs <= io_wd;
-		5'd16: so <= io_wd;
-		5'd17: su <= io_wd;
-		5'd18: sv <= io_wd;
-		5'd19: to <= io_wd;
-		5'd20: tu <= io_wd;
-		5'd21: tv <= io_wd;
-		5'd22: zo <= io_wd;
-		5'd23: zu <= io_wd;
-		5'd24: zv <= io_wd;
 		5'd25: begin ks <= io_wd[7:0]; kt <= io_wd[15:8]; kz <= io_wd[23:16]; end
-		5'd26: sadj <= io_wd;
-		5'd27: tadj <= io_wd;
-		5'd28: bbs <= io_wd;
-		5'd29: bbt <= io_wd;
 		default: ;
 	endcase
 end
@@ -127,9 +123,9 @@ reg signed [7:0] d_zsh = 0;
 reg d_take = 1'b0;                        // the pixel part takes the descriptor (a pulse)
 
 // ------------------------------------------------------------------ the math part
-localparam [4:0] M_IDLE = 5'd0, M_POP = 5'd1, M_ZEMIT = 5'd2, M_INIT1 = 5'd3, M_INIT2 = 5'd4, M_INIT3 = 5'd5,
+localparam [4:0] M_IDLE = 5'd0, M_POP = 5'd1, M_ZEMIT = 5'd2, M_ACC = 5'd3, M_MCL2 = 5'd4,
 	M_NORM = 5'd6, M_DIV = 5'd7, M_MS = 5'd8, M_MSW1 = 5'd9, M_MSW2 = 5'd10, M_MSQ = 5'd11, M_MTQ = 5'd12,
-	M_MCL = 5'd13, M_AFTER = 5'd14, M_SEG = 5'd15, M_LM1 = 5'd16, M_LM2 = 5'd17, M_STEP = 5'd18, M_SW1 = 5'd19,
+	M_MCL = 5'd13, M_AFTER = 5'd14, M_SEG = 5'd15, M_STEP = 5'd18, M_SW1 = 5'd19,
 	M_SW2 = 5'd20, M_SWQ = 5'd21, M_SWQ2 = 5'd22, M_EMIT = 5'd23, M_NORM2 = 5'd24, M_MSW3 = 5'd25,
 	M_MSW4 = 5'd26, M_MSW5 = 5'd27, M_MSW6 = 5'd28, M_SW3 = 5'd29, M_SW4 = 5'd30;
 reg [4:0] ms = M_IDLE;
@@ -147,23 +143,51 @@ reg [9:0] m_zn = 10'd0;                   // a z span
 reg [15:0] m_zoff = 16'd0;
 reg [31:0] m_zizi = 32'd0, m_zizs = 32'd0;
 
-// three 32 x 10 multiplies (S, T, Z grads by u, v, or by seg - 1): one clock
-reg signed [31:0] mu_a0 = 0, mu_a1 = 0, mu_a2 = 0;
-reg [9:0] mu_b = 10'd0;
-reg signed [42:0] mu_p0 = 0, mu_p1 = 0, mu_p2 = 0;
+// the accumulate pass (M_ACC): products register * b through the multiplier below, one issued per clock, each
+// added to S / T / Z (ac_ch) when it comes out (5 clocks later, the tag pipe tg_*). Group 0: the origin * 1,
+// 1: grad_u * ac_bu (u, 16 or seg - 1), 2: grad_v * v; the register index = 3 * value + group.
+reg [1:0] ac_ch = 2'd0, ac_grp = 2'd0;
+reg ac_lg = 1'b0;                         // the last group: 0 = group 1 (a segment), 1 = group 2 (the span start)
+reg ac_iss = 1'b0;                        // products still to issue
+reg [9:0] ac_bu = 10'd0;
+reg [4:0] tg_v = 5'd0;
+reg [9:0] tg_ch = 10'd0;
+wire ac_issue = ms == M_ACC && ac_iss;
 always @(posedge clk) begin
-	mu_p0 <= mu_a0 * $signed({ 1'b0, mu_b });
-	mu_p1 <= mu_a1 * $signed({ 1'b0, mu_b });
-	mu_p2 <= mu_a2 * $signed({ 1'b0, mu_b });
+	tg_v <= reset ? 5'd0 : { tg_v[3:0], ac_issue };
+	tg_ch <= { tg_ch[7:0], ac_ch };
+end
+always @(*) begin
+	case (ms)
+	M_ACC: pr_ra = { ac_ch, 1'b0 } + { 2'b00, ac_ch } + { 2'b00, ac_grp };
+	M_MSW2: pr_ra = R_SADJ;
+	M_MSW3: pr_ra = R_BBS;
+	M_MTQ: pr_ra = R_TADJ;
+	M_MCL: pr_ra = R_BBT;
+	default: pr_ra = R_ZU;                // M_EMIT
+	endcase
 end
 
 // Z normalised: e = the top bit, m = its 24 bits from there
+// Ф5: the top set bit as a two-level tree (8-bit groups; a plain loop made a long chain of multiplexers)
+function [3:0] pe8;                       // { any, the top set bit } of 8 bits
+	input [7:0] x;
+	integer k;
+	begin
+		pe8 = 4'd0;
+		for (k = 0; k < 8; k = k + 1)
+			if (x[k]) pe8 = { 1'b1, k[2:0] };
+	end
+endfunction
 reg [4:0] z_e_c;
+reg [3:0] z_pg;
 integer bi;
 always @(*) begin
 	z_e_c = 5'd0;
-	for (bi = 0; bi < 31; bi = bi + 1)
-		if (mZ[bi]) z_e_c = bi;
+	for (bi = 0; bi < 4; bi = bi + 1) begin
+		z_pg = pe8(bi == 3 ? { 1'b0, mZ[30:24] } : mZ[8 * bi +: 8]);
+		if (z_pg[3]) z_e_c = { bi[1:0], z_pg[2:0] };
+	end
 end
 wire [54:0] z_wide = { mZ[30:0], 24'd0 };   // Z[j] at j + 24: m = Z[e .. e - 23] = z_wide[e + 1 +: 24]
 reg [4:0] z_e = 5'd0;
@@ -206,22 +230,28 @@ reg signed [9:0] q_sh = 0;
 reg q_sgn = 1'b0;
 reg signed [58:0] ma_p2 = 0;
 wire p_sign = ma_p2[58];
-wire [124:0] q_ext = { {35{p_sign}}, ma_p2, 31'd0 };
+wire [127:0] q_ext = { {38{p_sign}}, ma_p2, 31'd0 };
 wire [6:0] q_base = q_sh[6:0] + 7'd31;     // valid for -31 <= q_sh <= 62
-reg [5:0] p_nb;                           // the significant bits of the product
+reg [5:0] p_nb;                           // the significant bits of the product (bits 57..0 against the sign)
+wire [63:0] p_x = { 6'd0, ma_p2[57:0] ^ {58{p_sign}} };
+reg [3:0] p_pg;
 integer pi;
 always @(*) begin
 	p_nb = 6'd0;
-	for (pi = 0; pi < 58; pi = pi + 1)
-		if (ma_p2[pi] != p_sign) p_nb = pi + 1;
+	for (pi = 0; pi < 8; pi = pi + 1) begin
+		p_pg = pe8(p_x[8 * pi +: 8]);
+		if (p_pg[3]) p_nb = { pi[2:0], p_pg[2:0] } + 6'd1;
+	end
 end
-reg [31:0] qa_win = 32'd0;
+reg [38:0] qa_win = 39'd0;                // Ф5: the window by bytes (stage A), its bits 0..7 in stage B
+reg [2:0] qa_fine = 3'd0;
 reg [5:0] qa_nb = 6'd0;
 reg qa_sign = 1'b0, qa_sgn = 1'b0;
 reg signed [9:0] qa_sh = 0;
 always @(posedge clk) begin
 	ma_p2 <= ma_p;
-	qa_win <= q_ext[q_base +: 32];
+	qa_win <= q_ext[{ q_base[6:3], 3'd0 } +: 39];
+	qa_fine <= q_base[2:0];
 	qa_nb <= p_nb;
 	qa_sign <= p_sign;
 	qa_sgn <= q_sgn;
@@ -238,7 +268,7 @@ always @(*) begin
 	else if ($signed({ 4'd0, qa_nb }) > qa_sh + 10'sd31)
 		q_val = qa_sign ? 32'sh80000000 : 32'sh7FFFFFFF;
 	else
-		q_val = qa_win;
+		q_val = qa_win[qa_fine +: 32];
 end
 reg signed [31:0] cl_q = 0, cl_adj = 0, cl_hi = 0;   // the clamp, one value per clock (s, then t)
 
@@ -270,6 +300,11 @@ wire [9:0] seg_n = m_left >= 10'd16 ? 10'd16 : m_left;
 always @(posedge clk) begin
 	pop <= 1'b0;
 	if (d_take) d_valid <= 1'b0;
+	if (tg_v[4]) case (tg_ch[9:8])     // a product of the accumulate pass
+		2'd0: mS <= mS + ma_p[31:0];
+		2'd1: mT <= mT + ma_p[31:0];
+		default: mZ <= mZ + ma_p[31:0];
+	endcase
 	if (reset) begin
 		ms <= M_IDLE;
 		d_valid <= 1'b0;
@@ -287,8 +322,9 @@ always @(posedge clk) begin
 			m_left <= { 1'b0, q_head[EW-2:EW-10] } + 10'd1;
 			m_v <= q_head[80:73];
 			m_off <= { 8'd0, q_head[80:73] } * 16'd320 + { 7'd0, q_head[72:64] };
-			mu_a0 <= su; mu_a1 <= tu; mu_a2 <= zu; mu_b <= { 1'b0, q_head[72:64] };
-			ms <= M_INIT1;
+			mS <= 0; mT <= 0; mZ <= 0;
+			ac_ch <= 2'd0; ac_grp <= 2'd0; ac_lg <= 1'b1; ac_iss <= 1'b1; ac_bu <= { 1'b0, q_head[72:64] };
+			ms <= M_ACC;
 		end
 	end
 	M_ZEMIT: if (!d_valid || d_take) begin
@@ -296,21 +332,25 @@ always @(posedge clk) begin
 		d_n <= m_zn; d_off <= m_zoff; d_zacc <= m_zizi; d_zstep <= m_zizs; d_zsh <= 8'sd16;
 		ms <= M_IDLE;
 	end
-	// S, T, Z = origin + u * grad_u + v * grad_v (the u products compute in INIT1, the v ones in INIT2)
-	M_INIT1: begin
-		mu_a0 <= sv; mu_a1 <= tv; mu_a2 <= zv; mu_b <= { 2'b00, m_v };
-		ms <= M_INIT2;
-	end
-	M_INIT2: begin
-		mS <= so + mu_p0[31:0]; mT <= to + mu_p1[31:0]; mZ <= zo + mu_p2[31:0];
-		ms <= M_INIT3;
-	end
-	M_INIT3: begin
-		mS <= mS + mu_p0[31:0]; mT <= mT + mu_p1[31:0]; mZ <= mZ + mu_p2[31:0];
-		mZ0 <= mZ + mu_p2[31:0];
-		m_first <= 1'b1;
-		m_init <= 1'b1;
-		ms <= M_NORM;
+	// S, T, Z += register * b (the span start: origin + u * grad_u + v * grad_v; a segment: + grad_u * (16 or
+	// seg - 1)); done when all the products are in
+	M_ACC: begin
+		if (ac_iss) begin
+			ma_a <= { pr_rd[31], pr_rd };
+			ma_b <= ac_grp == 2'd0 ? 26'sd1 : ac_grp == 2'd1 ? { 16'd0, ac_bu } : { 18'd0, m_v };
+			if (ac_ch == 2'd2) begin
+				ac_ch <= 2'd0; ac_grp <= ac_grp + 2'd1;
+				if (ac_grp == { 1'b0, ac_lg } + 2'd1) ac_iss <= 1'b0;
+			end else
+				ac_ch <= ac_ch + 2'd1;
+		end else if (tg_v == 5'd0) begin
+			if (ac_lg) begin
+				mZ0 <= mZ;
+				m_first <= 1'b1;
+				m_init <= 1'b1;
+			end
+			ms <= M_NORM;
+		end
 	end
 	// s, t of (mS, mT, mZ) with the bound m_lo: normalise Z, divide, multiply, shift, clamp
 	M_NORM: begin
@@ -344,8 +384,14 @@ always @(posedge clk) begin
 		ma_a <= { mT[31], mT }; ma_b <= { 1'b0, dv_q };
 		ms <= M_MSW2;
 	end
-	M_MSW2: ms <= M_MSW3;      // c + 2
-	M_MSW3: ms <= M_MSW5;      // c + 3
+	M_MSW2: begin              // c + 2
+		cl_adj <= pr_rd;           // sadjust
+		ms <= M_MSW3;
+	end
+	M_MSW3: begin              // c + 3
+		cl_hi <= pr_rd;            // bbextents
+		ms <= M_MSW5;
+	end
 	M_MSW5: ms <= M_MSW6;      // c + 4
 	M_MSW6: ms <= M_MSW4;      // c + 5: ma_p = S * r
 	M_MSW4: begin              // c + 6: ma_p2 = S * r (stage A uses q_sh of S); the T shift from c + 7
@@ -354,15 +400,19 @@ always @(posedge clk) begin
 		ms <= M_MSQ;
 	end
 	M_MSQ: begin               // c + 7: q_val of S
-		cl_q <= q_val; cl_adj <= sadj; cl_hi <= bbs;
+		cl_q <= q_val;
 		ms <= M_MTQ;
 	end
 	M_MTQ: begin               // c + 8: q_val of T; the clamp of S
 		m_sn <= clampq(cl_q, cl_adj, m_lo, cl_hi);
-		cl_q <= q_val; cl_adj <= tadj; cl_hi <= bbt;
+		cl_q <= q_val; cl_adj <= pr_rd;   // tadjust
 		ms <= M_MCL;
 	end
-	M_MCL: begin               // the clamp of T
+	M_MCL: begin
+		cl_hi <= pr_rd;            // bbextentt
+		ms <= M_MCL2;
+	end
+	M_MCL2: begin              // the clamp of T
 		m_tn <= clampq(cl_q, cl_adj, m_lo, cl_hi);
 		ms <= M_AFTER;
 	end
@@ -382,18 +432,9 @@ always @(posedge clk) begin
 	M_SEG: begin
 		m_seg <= seg_n[4:0];
 		m_left <= m_left - seg_n;
-		if (m_left != seg_n) begin
-			mS <= mS + (su <<< 4); mT <= mT + (tu <<< 4); mZ <= mZ + (zu <<< 4);
-			ms <= M_NORM;
-		end else begin
-			mu_a0 <= su; mu_a1 <= tu; mu_a2 <= zu; mu_b <= seg_n - 10'd1;
-			ms <= M_LM1;
-		end
-	end
-	M_LM1: ms <= M_LM2;       // grad * (seg - 1) computing
-	M_LM2: begin
-		mS <= mS + mu_p0[31:0]; mT <= mT + mu_p1[31:0]; mZ <= mZ + mu_p2[31:0];
-		ms <= M_NORM;
+		ac_ch <= 2'd0; ac_grp <= 2'd1; ac_lg <= 1'b0; ac_iss <= 1'b1;
+		ac_bu <= m_left != seg_n ? 10'd16 : seg_n - 10'd1;
+		ms <= M_ACC;
 	end
 	// the last steps: ((snext - s) * recip(seg - 1)) >> 16
 	M_STEP: begin
@@ -419,7 +460,7 @@ always @(posedge clk) begin
 		d_valid <= 1'b1; d_z <= 1'b0; d_first <= m_first; d_last <= m_left == 10'd0;
 		d_n <= { 5'd0, m_seg }; d_off <= m_off;
 		d_s <= m_s; d_t <= m_t; d_ss <= m_ss; d_ts <= m_ts;
-		d_zacc <= mZ0; d_zstep <= zu; d_zsh <= kz - 8'sd15;
+		d_zacc <= mZ0; d_zstep <= pr_rd; d_zsh <= kz - 8'sd15;   // zu
 		m_first <= 1'b0;
 		m_off <= m_off + { 11'd0, m_seg };
 		m_s <= m_sn; m_t <= m_tn;
