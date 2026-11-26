@@ -21,13 +21,59 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
    without the fraction carries: the texel of pixel k is ptex + ((sfrac + k * r_sstepx) >> 16) +
    ((tfrac + k * r_tstepx) >> 16) * skinwidth, what the original adds up (a_ststepxwhole + the carries of
    a_sstepxfrac / a_tstepxfrac; the fractions start in 0..0xFFFF); the colormap in a register. Bit exact.
-   Bench: KG_ACOUNT (the alias pixels per frame, vid_kg.c), KG_NOAPIX (one pixel per span). */
+   Bench: KG_ACOUNT (the alias pixels per frame, vid_kg.c), KG_NOAPIX (one pixel per span).
+   Ф8 KG_HWALIAS: the spans go to the drawer (quake_span ASPAN, src/sim/qspan_model.h aspan()): per triangle
+   AWHOLE / AFST / ALS / AZS / AW after D_PolysetCalcGradients, per span APTEX / AST / AL / AZI / ASPAN; the skin
+   of the model is read from its copy in the SRAM (kg_skin_sram, the skin cache KG_SKIN_BASE..KG_SKIN_END; r_alias.c),
+   the colormap from QSP_CMAP (vid_kg.c). */
 // d_polyset.c: routines for drawing sets of polygons sharing the same
 // texture (used for Alias models)
 
 #include "quakedef.h"
 #include "r_local.h"
 #include "d_local.h"
+#ifdef KG_HWALIAS
+#ifndef KG_QOPT
+#error "KG_HWALIAS needs KG_QOPT (the CPU path of the older drawers)"
+#endif
+#undef SDRAM_BASE
+#include "mmio.h"
+/* the drawer has the alias spans (STAT ID QSP_ID_ALIAS; vid_kg.c at the start): a bitstream without them (an older
+   board build) gets the CPU path */
+int kg_hwalias;
+/* the skin cache in the SRAM: a copy per skin of the models drawn, from KG_SKIN_BASE on; full: wait for the drawer,
+   start again (the table forgets all); D_FlushCaches (a new map: the hunk is reused) forgets all too */
+#define KG_SKIN_N 96
+static struct { const byte *src; byte *dst; } kg_skin[KG_SKIN_N];
+static int kg_nskin;
+static unsigned kg_skin_rover = KG_SKIN_BASE;
+void kg_skin_flush (void)
+{
+	kg_nskin = 0;
+	kg_skin_rover = KG_SKIN_BASE;
+}
+void *kg_skin_sram (const void *src, int size)
+{
+	extern void kg_span_idle (void);
+	int i;
+	for (i = 0 ; i < kg_nskin ; i++)
+		if (kg_skin[i].src == src)
+			return kg_skin[i].dst;
+	size = (size + 3) & ~3;
+	if (size > KG_SKIN_END - KG_SKIN_BASE)
+		Sys_Error ("kg_skin_sram: skin of %d bytes", size);
+	if (kg_nskin == KG_SKIN_N || kg_skin_rover + size > KG_SKIN_END)
+	{
+		kg_span_idle ();	/* the queued spans may read the old skins */
+		kg_skin_flush ();
+	}
+	kg_skin[kg_nskin].src = src;
+	kg_skin[kg_nskin].dst = (byte *)kg_skin_rover;
+	memcpy ((byte *)kg_skin_rover, src, size);
+	kg_skin_rover += size;
+	return kg_skin[kg_nskin++].dst;
+}
+#endif
 #include "surface_accel.h"
 #include "span_accel.h"
 
@@ -671,6 +717,17 @@ PQ_FASTTEXT void D_PolysetDrawSpans8 (spanpackage_t *pspanpackage)
 #ifdef KG_NOAPIX
 			lcount = 1;	/* karabas bench */
 #endif
+#ifdef KG_HWALIAS
+			if (kg_hwalias)
+			{
+				MMIO_QSP_APTEX = (unsigned)pspanpackage->ptex;	/* karabas Ф8: the span to the drawer */
+				MMIO_QSP_AST = ((unsigned)pspanpackage->tfrac << 16) | ((unsigned)pspanpackage->sfrac & 0xFFFF);
+				MMIO_QSP_AL = (unsigned)pspanpackage->light;
+				MMIO_QSP_AZI = (unsigned)pspanpackage->zi;
+				MMIO_QSP_ASPAN = ((unsigned)(lcount - 1) << 16) | (((unsigned)pspanpackage->pdest - FB_BASE) & 0xFFFF);
+			}
+			else
+#endif
 #ifdef KG_QOPT
 			{	/* karabas Ф7в: see the top of the file */
 				const byte *restrict cm = CMAP_BRAM_PTR;
@@ -872,6 +929,16 @@ PQ_FASTTEXT void D_RasterizeAliasPolySmooth (void)
 // because being a triangle, things are affine
 //
 	D_PolysetCalcGradients (r_affinetridesc.skinwidth);
+#ifdef KG_HWALIAS
+	if (kg_hwalias)
+	{
+		MMIO_QSP_AWHOLE = (unsigned)a_ststepxwhole;	/* karabas Ф8: the triangle of the drawer */
+		MMIO_QSP_AFST = ((unsigned)a_tstepxfrac << 16) | ((unsigned)a_sstepxfrac & 0xFFFF);
+		MMIO_QSP_ALS = (unsigned)r_lstepx;
+		MMIO_QSP_AZS = (unsigned)r_zistepx;
+		MMIO_QSP_AW = (unsigned)r_affinetridesc.skinwidth;
+	}
+#endif
 
 //
 // rasterize the polygon

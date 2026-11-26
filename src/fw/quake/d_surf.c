@@ -139,6 +139,9 @@ void D_FlushCaches (void)
 #ifdef KG_HWSPAN
 	kg_span_idle ();	/* karabas: all the blocks are free below */
 #endif
+#ifdef KG_HWALIAS
+	{ extern void kg_skin_flush (void); kg_skin_flush (); }	/* karabas Ф8: the skins of the old map */
+#endif
 
 	for (c = sc_base ; c ; c = c->next)
 	{

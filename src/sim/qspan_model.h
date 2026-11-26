@@ -59,6 +59,64 @@ struct QSpan {
     bool polymode = false;                    // a ZCLR was seen (the older firmware keeps its surface cache there)
     static bool mbit(const uint8_t *sram, uint32_t o) { return (sram[MASK + (o >> 3)] >> (o & 7)) & 1; }
     static void mset(uint8_t *sram, uint32_t o) { sram[MASK + (o >> 3)] |= (uint8_t)(1u << (o & 7)); }
+    // Ф8: the alias model spans (D_PolysetDrawSpans8, src/fw/quake/d_polyse.c KG_HWALIAS), MMIO 0x18c..0x1b0. Per
+    // triangle: AWHOLE (a_ststepxwhole), AFST = { a_tstepxfrac (31..16), a_sstepxfrac (15..0) }, ALS (r_lstepx),
+    // AZS (r_zistepx), AW (skinwidth); per span: APTEX (the SRAM byte address of its first texel, 21..0), AST =
+    // { tfrac (31..16), sfrac (15..0) }, AL (light), AZI (zi); ASPAN = { count - 1 (24..16), pixel offset (15..0) }
+    // draws it as the original loop: per pixel z tested ((zi >> 16) >= the z-buffer halfword, signed), then the
+    // pixel = colormap[texel + (light & 0xFF00)] (the colormap at CMAP in the SRAM; QA_CMAP_BRAM: in the drawer)
+    // and its z written; the texel steps by AWHOLE + the carries of the fractions (+ AW on a t carry).
+    static const uint32_t CMAP = 0x1fa000u;
+    static const int QA_SPAN = 4;   // the clocks of a span start (its registers from the queue)
+    int32_t a_whole = 0, a_ls = 0, a_zs = 0, a_l = 0, a_zi = 0;
+    uint32_t a_fs = 0, a_ft = 0, a_w = 0, a_ptex = 0, a_sf = 0, a_tf = 0;
+    uint64_t aspans = 0, apix = 0, apass = 0;
+    void aspan(uint32_t v, uint8_t *sram) {
+        uint32_t off = v & 0xffff, n = ((v >> 16) & 0x1ff) + 1, ptex = a_ptex, sf = a_sf, tf = a_tf, last_ta = 0xffffffffu;
+        int32_t l = a_l, zi = a_zi;
+        bool prev_drawn = false;
+        ops.clear();
+        ops.push_back({0, (uint16_t)QA_SPAN});
+        aspans++;
+        static const char *tr = getenv("QA_TRACE");              // debug: the spans over pixel offset QA_TRACE
+        if (tr) {
+            uint32_t t = (uint32_t)atoi(tr);
+            if (t >= off && t < off + n)
+                fprintf(stderr, "ASPAN off %u n %u ptex %06x sf %04x tf %04x l %08x zi %08x whole %d fs %04x ft %04x ls %d zs %d w %u\n",
+                        off, n, ptex, sf, tf, (uint32_t)l, (uint32_t)zi, a_whole, a_fs, a_ft, a_ls, a_zs, a_w);
+        }
+        for (uint32_t i = 0; i < n; i++, off++) {
+            uint32_t o = off < 64000 ? off : 0;
+            int16_t old;
+            memcpy(&old, &sram[ZB + 2 * o], 2);
+            ops.push_back({1, (uint16_t)QS_SRD});            // the z halfword
+            apix++;
+            if ((int32_t)(zi >> 16) >= (int32_t)old) {
+                uint8_t texel = sram[ptex & 0x3fffff];
+                uint8_t pix = sram[(CMAP + (texel + ((uint32_t)l & 0xff00))) & 0x3fffff];
+                if (((ptex & 0x3fffff) >> 1) != last_ta) { ops.push_back({1, (uint16_t)QS_SRD}); last_ta = (ptex & 0x3fffff) >> 1; }
+#ifndef QA_CMAP_BRAM
+                ops.push_back({1, (uint16_t)QS_SRD});        // the colormap byte
+#endif
+                if (!(off & 1) || !prev_drawn) ops.push_back({1, (uint16_t)QS_PIX});
+                ops.push_back({1, (uint16_t)QS_ZPIX});
+                uint16_t h = (uint16_t)(zi >> 16);
+                if (off < 64000) { sram[FB + off] = pix; memcpy(&sram[ZB + 2 * off], &h, 2); }
+                prev_drawn = true;
+                apass++;
+            } else prev_drawn = false;
+            zi = (int32_t)((uint32_t)zi + (uint32_t)a_zs);
+            l = (int32_t)((uint32_t)l + (uint32_t)a_ls);
+            ptex += (uint32_t)a_whole;
+            sf += a_fs;
+            ptex += sf >> 16;
+            sf &= 0xffff;
+            tf += a_ft;
+            if (tf & 0x10000) { ptex += a_w; tf &= 0xffff; }
+        }
+        for (auto &op : ops) pops_clk += op.cyc;
+    }
+
     QSpan() { for (auto &g : tag) g = 0xffffffffu; }
     bool tex_sdram() const { return (tex >> 28) & 1; }
     uint64_t busy() const { return pix * QS_PIX + zpix * QS_ZPIX + fills * QS_FILL + srd * QS_SRD; }
@@ -115,6 +173,16 @@ struct QSpan {
         case 0x178: persp(v, sram); return true;
         case 0x180: if (pvn < QP_MAXV) { pvu[pvn] = (int16_t)(v & 0xffff); pvv[pvn] = (int16_t)(v >> 16); pvn++; } return true;
         case 0x184: poly(sram, v & 1); pvn = 0; return true;
+        case 0x18c: a_whole = (int32_t)v; return true;       // Ф8: the alias spans
+        case 0x190: a_fs = v & 0xffff; a_ft = v >> 16; return true;
+        case 0x194: a_ls = (int32_t)v; return true;
+        case 0x198: a_zs = (int32_t)v; return true;
+        case 0x19c: a_w = v & 0xfff; return true;
+        case 0x1a0: a_ptex = v & 0x3fffff; return true;
+        case 0x1a4: a_sf = v & 0xffff; a_tf = v >> 16; return true;
+        case 0x1a8: a_l = (int32_t)v; return true;
+        case 0x1ac: a_zi = (int32_t)v; return true;
+        case 0x1b0: aspan(v, sram); return true;
         case 0x188:                                           // ZCLR: the coverage mask, 4000 halfword writes
             memset(&sram[MASK], 0, 8000); polymode = true;   // from now on ZSPAN marks the mask too
             ops.assign(4000, Op{1, (uint16_t)QS_ZPIX});
@@ -132,7 +200,8 @@ struct QSpan {
         }
         return false;
     }
-    static uint32_t stat() { return 0x95000000u; }   // QSP_ID, never busy (the model runs at once)
+    // QSP_ID (Ф8: 0x96, the alias spans; QSP_OLDID set: 0x95, a drawer without them), never busy (the model runs at once)
+    static uint32_t stat() { static const bool old = getenv("QSP_OLDID") != nullptr; return old ? 0x95000000u : 0x96000000u; }
 
     // s (or t) of a point: (S * r) >> (k - kz + 8 + e), with Z = m * 2^(e - 23), m in [2^23, 2^24), r = 2^47 / m;
     // saturated to int32 (s = sdivz * 65536 / zi as d_scan.c; a Z <= 0 gives the biggest value)
